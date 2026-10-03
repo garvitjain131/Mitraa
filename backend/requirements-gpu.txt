@@ -1,0 +1,4 @@
+# Optional: makes speech recognition ~25x faster on NVIDIA GPUs (about 1 GB download).
+# Install with: pip install -r requirements-gpu.txt
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10
