@@ -1,4 +1,4 @@
-﻿"""Adaptive presentation and execution contracts with no audio/provider access."""
+"""Adaptive presentation and execution contracts with no audio/provider access."""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from types import SimpleNamespace as NS
@@ -119,9 +119,9 @@ def test_approval_survives_hide_and_requires_explicit_once(ui):
 def test_preview_has_no_provider_microphone_or_downloads(monkeypatch):
     app=QApplication.instance() or QApplication([])
     import mitraa.assistant.voice as voice
-    import mitraa.assistant.worker as worker
+    import mitraa.agent.llm as llm_module
     monkeypatch.setattr(voice,'build_voice',lambda *_:pytest.fail('preview opened audio'))
-    monkeypatch.setattr(worker,'NemotronClient',lambda *_:pytest.fail('preview provider'))
+    monkeypatch.setattr(llm_module,'NemotronClient',lambda *_:pytest.fail('preview provider'))
     o=Overlay(True); o.orb.reduced=True; c=Controller(o,True); c.listen()
     assert o.presentation==Presentation.ORB_ONLY
     c.expand(); c.next_preview(); assert c.state==State.TRANSCRIBING
@@ -169,3 +169,101 @@ def test_repeated_summon_does_not_restart_capture_or_work(ui):
     c.session_open=False; c.submit('Hello'); epoch=c.epoch
     c.summon(); c.summon()
     assert c.epoch==epoch and w.sent==[('Hello',1)] and o.presentation==Presentation.EXPANDED_DOCK
+
+def test_voice_initialization_does_not_block_or_capture_after_dismiss(ui,monkeypatch):
+    import threading
+    import time
+    import mitraa.assistant.voice as voice
+    app,o,c,w=ui
+    release=threading.Event(); calls=[]
+    def build(_):
+        calls.append('build')
+        assert release.wait(3)
+        return voice.Voice(None,None)
+    monkeypatch.setattr(voice,'build_voice',build)
+    start=time.perf_counter(); c.listen()
+    assert time.perf_counter()-start<.2
+    assert c.state==State.LOADING_VOICE and o.presentation==Presentation.ORB_ONLY
+    c.dismiss(); c.listen(); c.dismiss()
+    release.set(); c.voice_builder.join(3); app.processEvents()
+    assert calls==['build']
+    assert not c.session_open and not o.isVisible() and c.voice is not None
+
+def test_expanded_single_click_stops_audio_without_submitting(ui):
+    app,o,c,w=ui
+    cancelled=[]
+    class Audio:
+        def cancel(self): cancelled.append(True)
+    c.voice_input=Audio(); c.session_open=True; c.set_state(State.RECORDING_SPEECH); c.expand()
+    old=c.epoch
+    QTest.mouseClick(o.orb,Qt.LeftButton); app.processEvents()
+    assert cancelled==[True] and not c.session_open and c.state==State.IDLE
+    assert o.presentation==Presentation.EXPANDED_DOCK
+    c.handle('voice_text','stale recording',old)
+    assert not w.sent
+    c.voice_input=None
+
+
+def test_double_click_collapses_and_second_release_does_not_reopen(ui):
+    app,o,c,w=ui
+    c.expand(); c.session_open=True; c.set_state(State.RECORDING_SPEECH)
+    QTest.mouseClick(o.orb,Qt.LeftButton)
+    QTest.mouseDClick(o.orb,Qt.LeftButton)
+    QTest.mouseRelease(o.orb,Qt.LeftButton); app.processEvents()
+    assert o.presentation==Presentation.ORB_ONLY and o.width()==88
+    assert not c.session_open and not w.sent
+    QTest.mouseClick(o.orb,Qt.LeftButton); app.processEvents()
+    assert o.presentation==Presentation.EXPANDED_DOCK and not c.session_open
+
+
+def test_collapse_keeps_inflight_work_and_pending_approval(ui):
+    app,o,c,w=ui
+    c.submit('Hello'); request_id=c.request_id
+    c.on_orb_double_click()
+    assert c.busy and c.request_id==request_id and c.state==State.THINKING
+    info=NS(approval_id='decision-id',description='Move file',risk='HIGH',args={'path':'Documents/a.txt'},reasons=['Overwrite'])
+    c.handle('response',NS(type='approval_required',pending_approval=info),request_id)
+    c.on_orb_double_click()
+    assert c.pending=='decision-id' and not w.decisions
+    QTest.mouseClick(o.orb,Qt.LeftButton); app.processEvents()
+    assert o.card.isVisible() and o.deny.hasFocus() and c.pending=='decision-id'
+
+def test_expanded_idle_click_restarts_listening_in_dock(ui,monkeypatch):
+    app,o,c,w=ui
+    c.preview=True; c.expand()
+    QTest.mouseClick(o.orb,Qt.LeftButton)
+    assert not c.session_open
+    QTest.qWait(QApplication.doubleClickInterval()+60)
+    assert c.session_open and c.state==State.WAITING_FOR_SPEECH
+    assert o.presentation==Presentation.EXPANDED_DOCK
+    QTest.mouseClick(o.orb,Qt.LeftButton)
+    assert not c.session_open and c.state==State.IDLE and not w.sent
+
+
+def test_idle_double_click_never_opens_microphone(ui,monkeypatch):
+    app,o,c,w=ui
+    c.expand()
+    monkeypatch.setattr(c,'listen',lambda **kwargs:pytest.fail('double-click started capture'))
+    QTest.mouseClick(o.orb,Qt.LeftButton)
+    QTest.mouseDClick(o.orb,Qt.LeftButton)
+    QTest.mouseRelease(o.orb,Qt.LeftButton)
+    QTest.qWait(QApplication.doubleClickInterval()+60)
+    assert o.presentation==Presentation.ORB_ONLY and not c.session_open
+
+
+def test_dismiss_invalidates_delayed_restart(ui,monkeypatch):
+    app,o,c,w=ui
+    c.expand()
+    monkeypatch.setattr(c,'listen',lambda **kwargs:pytest.fail('dismissed restart opened capture'))
+    QTest.mouseClick(o.orb,Qt.LeftButton); c.dismiss()
+    QTest.qWait(QApplication.doubleClickInterval()+60)
+    assert not o.isVisible() and not c.session_open
+
+def test_background_voice_preload_never_opens_microphone(ui,monkeypatch):
+    import mitraa.assistant.voice as voice
+    app,o,c,w=ui
+    monkeypatch.setattr(voice,'build_voice',lambda _:voice.Voice(object(),None))
+    monkeypatch.setattr(voice,'VoiceInput',lambda *args,**kwargs:pytest.fail('preload opened microphone'))
+    assert not c.ensure_voice()
+    c.voice_builder.join(3); app.processEvents()
+    assert c.voice is not None and c.voice_input is None and not c.session_open and not w.sent

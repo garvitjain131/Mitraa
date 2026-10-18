@@ -1,11 +1,13 @@
-﻿"""Database/orchestrator ownership and request-tagged desktop results."""
+"""Database/orchestrator ownership and request-tagged desktop results."""
 import threading
 from types import SimpleNamespace
 from mitraa.assistant.worker import AgentWorker
 
 
 def test_agent_and_database_stay_on_one_worker_and_results_are_tagged(monkeypatch):
-    import mitraa.assistant.worker as module
+    import mitraa.agent.llm as llm_module
+    import mitraa.agent.orchestrator as agent_module
+    import mitraa.db.session as session_module
     threads=[]; events=[]; finished=threading.Event(); closed=threading.Event()
     main=threading.get_ident()
     class Session:
@@ -20,9 +22,9 @@ def test_agent_and_database_stay_on_one_worker_and_results_are_tagged(monkeypatc
             return SimpleNamespace(conversation_id='persisted')
         def resume(self,approval_id,approved):
             threads.append(threading.get_ident()); return SimpleNamespace(conversation_id='persisted')
-    monkeypatch.setattr(module,'NemotronClient',lambda _:object())
-    monkeypatch.setattr(module,'default_session_factory',lambda:factory)
-    monkeypatch.setattr(module,'Orchestrator',Agent)
+    monkeypatch.setattr(llm_module,'NemotronClient',lambda _:object())
+    monkeypatch.setattr(session_module,'default_session_factory',lambda:factory)
+    monkeypatch.setattr(agent_module,'Orchestrator',Agent)
     def post(event):
         events.append(event)
         if event[0]=='response' and event[2]==8: finished.set()

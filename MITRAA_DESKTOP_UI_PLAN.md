@@ -1,4 +1,4 @@
-﻿# Mitraa adaptive desktop UI
+# Mitraa adaptive desktop UI
 
 This implementation supersedes the earlier vertical orb/pill design. Visual references are `design/mitraa-matching-standalone-circle.png` and `design/mitraa-expanded-dock.png`. They are references, not flattened interactive surfaces.
 
@@ -6,7 +6,7 @@ This implementation supersedes the earlier vertical orb/pill design. Visual refe
 
 Presentation has three states: hidden, circle_only, expanded_dock. Execution has idle, loading_voice, waiting_for_speech, recording_speech, transcribing, thinking, working, awaiting_approval, speaking and error. The Qt controller owns these independently.
 
-Explicit Ctrl-alone hold (3 seconds), tray Open or microphone activation starts a circle-only session. Capture waits for model readiness, prior capture release and playback stop. Clicking the circle changes presentation only. A confirmed endpoint closes the stream before expanding and transcribing. A final validated transcript submits once. Repeated summon during an agent request reveals its progress. Typed input replaces the dock center. Long responses and explicit approvals use attached cards above the dock.
+Explicit Ctrl-alone hold (3 seconds), tray Open or microphone activation starts a circle-only session. Capture waits for model readiness, prior capture release and playback stop. Clicking the circle-only orb expands without changing recording. In the expanded dock, a single click toggles listening (stopping without submitting, or restarting within the expanded dock after the system double-click interval). A double-click cancels any pending restart and collapses to circle-only without restarting capture. The second release of a double-click cannot reopen the dock. Running agent requests and pending approvals survive collapse. A confirmed endpoint closes the stream before expanding and transcribing. A final validated transcript submits once. Repeated summon during an agent request reveals its progress. Typed input replaces the dock center. Long responses and explicit approvals use attached cards above the dock.
 
 Escape hides and cancels audio; it does not claim running tools were cancelled or resolve approvals. Pending decisions and hidden agent results remain in controller/worker conversation state. A later summon restores an approval before any new recording can start.
 
@@ -35,3 +35,11 @@ All endpoint settings and their `MITRAA_*` names appear in `backend/.env.example
 Automated tests cover endpoint onset, pre-roll, brief pauses, noise bursts, timeout, limit, finalization, stream exit paths, resampling, metadata rejection, loading/playback/cancellation gating, stale session/request events, duplicate submissions, click-only presentation changes, pending approvals, anchored/clamped geometry, cards and existing hotkey/backend security behavior.
 
 Native Qt renders inspect shape/layout on Windows. Actual room speech/fan noise, cross-app keyboard focus, desktop click-through and mixed-DPI/negative-monitor transitions need hands-on verification and must not be inferred from synthetic tests or preview. Speech models and tools already running cannot be forcibly cancelled; their late UI events are invalidated and owning workers clean up when they return.
+
+## Startup path
+
+Desktop startup uses lightweight preferences, Qt and tray/hotkey support only. Heavy backend imports move to the first worker request. Input and text-document widgets are lazy; voice construction/imports happen on a background thread and cancelled initialization cannot start a microphone session. The desktop-ready target is two seconds; the local fresh-process benchmark measured 0.48–0.54 seconds after optimization. Whisper readiness/download and first model requests are measured separately. Run `python -m tests.startup_benchmark` from `backend` to reproduce; performance varies with machine load and caches.
+
+## Voice readiness optimization
+
+`MITRAA_VOICE_PRELOAD=true` initializes voice in a background worker shortly after desktop readiness. This does not create a recording session or open the microphone; preview never preloads. Cache-first model resolution avoids remote revision checks on repeat launches. Auto device detection skips unusable CUDA, both device attempts reuse the resolved path, and CPU readiness excludes silence language-detection/decoding warm-up. GPU readiness checks the encoder. Loading is idempotent and its duration is logged. The same cached small model measured about 13 seconds including fresh-process voice imports on the local machine, compared with roughly 39–43 seconds in recent summon logs; caches and hardware affect timing. Model downloads and actual transcription have separate costs.

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     mitraa_hold_seconds: float = 3.0
     mitraa_log_level: str = "INFO"  # DEBUG also logs Ctrl hold start/release (never other keys)
     # Voice: speak after summoning; Mitraa answers out loud.
+    mitraa_voice_preload: bool = True  # warm local speech model after desktop readiness; no microphone
     mitraa_voice_input: bool = True
     mitraa_voice_output: bool = True
     mitraa_stt_model: str = "small"  # Whisper size: tiny | base | small | medium (multilingual)

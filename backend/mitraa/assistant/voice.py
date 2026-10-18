@@ -13,6 +13,7 @@ import queue
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,15 +68,47 @@ class Transcriber:
         self.description = ""
         self._model: Any = None
         self._lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        self._load_thread: threading.Thread | None = None
+        self.load_seconds: float | None = None
 
     def load_async(self) -> None:
-        threading.Thread(target=self._load, name="mitraa-whisper-load", daemon=True).start()
+        with self._load_lock:
+            if self.ready.is_set() or (self._load_thread and self._load_thread.is_alive()):
+                return
+            self._load_thread = threading.Thread(target=self._load, name="mitraa-whisper-load", daemon=True)
+            self._load_thread.start()
 
     def _load(self) -> None:
+        started = time.perf_counter()
         try:
             from faster_whisper import WhisperModel
+            from faster_whisper.utils import download_model
+            from huggingface_hub.errors import LocalEntryNotFoundError
+            import ctranslate2
 
-            attempts = [("cuda", "float16"), ("cpu", "int8")] if self.device == "auto" else [
+            # Resolve once, locally first. GPU/CPU attempts reuse the same path
+            # instead of each asking the hub for the current remote revision.
+            if Path(self.model_name).is_dir():
+                source = self.model_name
+            else:
+                try:
+                    source = download_model(self.model_name, local_files_only=True)
+                    if not all((Path(source)/name).is_file() for name in ('model.bin','config.json','tokenizer.json')):
+                        raise FileNotFoundError('Cached speech model is incomplete.')
+                    logger.info('Using cached speech model: %s', self.model_name)
+                except (LocalEntryNotFoundError, FileNotFoundError):
+                    logger.info('Downloading speech model for first use: %s', self.model_name)
+                    source = download_model(self.model_name)
+
+            cuda_usable = False
+            if self.device == 'auto':
+                try:
+                    cuda_usable = ctranslate2.get_cuda_device_count() > 0
+                except Exception:
+                    logger.info('CUDA is unavailable; using CPU speech recognition.')
+
+            attempts = ([("cuda", "float16"), ("cpu", "int8")] if cuda_usable else [("cpu", "int8")]) if self.device == "auto" else [
                 (self.device, "float16" if self.device == "cuda" else "int8")
             ]
             if any(d == "cuda" for d, _ in attempts):
@@ -83,9 +116,11 @@ class Transcriber:
             last_error: Exception | None = None
             for device, compute_type in attempts:
                 try:
-                    model = WhisperModel(self.model_name, device=device, compute_type=compute_type)
-                    warmup, _ = model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)
-                    list(warmup)  # execute lazy decoding before marking the model ready
+                    model = WhisperModel(source, device=device, compute_type=compute_type, local_files_only=True)
+                    if device == 'cuda':
+                        # Validate actual CUDA kernels without language detection or
+                        # decoding fabricated silence. CPU constructors need no warm-up.
+                        model.encode(np.zeros((model.feature_extractor.feature_size,3000),dtype=np.float32))
                     self._model = model
                     self.description = f"Whisper {self.model_name} on {device.upper()}"
                     logger.info("Speech model ready: %s", self.description)
@@ -98,6 +133,8 @@ class Transcriber:
             self.error = f"Speech recognition unavailable: {exc}"
             logger.exception("Whisper load failed")
         finally:
+            self.load_seconds = time.perf_counter()-started
+            logger.info("Speech model initialization finished in %.3fs", self.load_seconds)
             self.ready.set()
 
     def transcribe(self, audio: np.ndarray, timeout: float = 300, *, short: bool = False, min_logprob: float = -1.0, max_no_speech: float = .6) -> tuple[str, str]:

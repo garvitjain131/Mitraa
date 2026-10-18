@@ -2,6 +2,7 @@
 import json
 import logging
 import signal
+import threading
 from enum import Enum
 from PySide6.QtCore import QObject, Signal, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor
@@ -41,7 +42,10 @@ class Controller(QObject):
         self.inputs=[]; self.session_open=False; self.submitted_sessions=set()
         self.transcript=''; self.result_text=''; self.result_card=None; self.progress=''
         self.recording_limited=False; self.preview_index=0; self.muted=False
+        self.voice_builder=None; self.voice_settings=None; self.voice_initializing=False
         self.closed=False; self.escape_hook=None; self.use_escape_hook=False
+        self.orb_restart=QTimer(self); self.orb_restart.setSingleShot(True)
+        self.orb_restart.timeout.connect(self.restart_expanded_listening)
         if preview: self.worker=None
         elif worker is not None: self.worker=worker
         else:
@@ -52,7 +56,8 @@ class Controller(QObject):
         overlay.mic_requested.connect(self.listen)
         overlay.submitted.connect(self.submit)
         overlay.decision.connect(self.decide)
-        overlay.orb_clicked.connect(self.expand)
+        overlay.orb_clicked.connect(self.on_orb_click)
+        overlay.orb_double_clicked.connect(self.on_orb_double_click)
         overlay.preview_next.connect(self.next_preview)
         overlay.visibility_changed.connect(self.sync_escape_hook)
 
@@ -83,6 +88,38 @@ class Controller(QObject):
         self.overlay.present(Presentation.EXPANDED_DOCK)
         self.render_status()
 
+    def stop_listening(self):
+        if self.session_open:
+            self.invalidate_audio()
+            self.set_state(State.IDLE)
+
+    def on_orb_click(self):
+        if self.overlay.presentation == Presentation.EXPANDED_DOCK:
+            if self.session_open:
+                self.stop_listening()
+            elif not self.busy and self.pending is None:
+                # Wait out Qt's double-click window before opening the microphone.
+                self.orb_restart.start(QApplication.doubleClickInterval())
+        elif self.pending:
+            self.show_approval()
+        else:
+            self.expand()
+            if self.result_card and not self.busy and not self.session_open:
+                title,text,approval,details=self.result_card
+                self.overlay.show_card(title,text,approval=approval,details=details)
+
+    def on_orb_double_click(self):
+        self.orb_restart.stop()
+        self.stop_listening()
+        self.overlay.present(Presentation.ORB_ONLY)
+        self.render_status()
+
+    def restart_expanded_listening(self):
+        if (not self.closed and self.overlay.isVisible()
+                and self.overlay.presentation == Presentation.EXPANDED_DOCK
+                and not self.session_open and not self.busy and self.pending is None):
+            self.listen(expanded=True)
+
     def summon(self,*_):
         if self.pending:
             self.show_approval(); return
@@ -94,6 +131,7 @@ class Controller(QObject):
         self.listen()
 
     def invalidate_audio(self):
+        self.orb_restart.stop()
         self.epoch+=1; self.session_open=False
         if self.voice_input: self.voice_input.cancel()
         if self.speaker: self.speaker.stop()
@@ -111,37 +149,54 @@ class Controller(QObject):
         self.set_state(State.IDLE); self.overlay.set_typing()
 
     def ensure_voice(self):
-        if self.voice is None:
-            from mitraa.assistant.voice import build_voice
-            from mitraa.config import get_settings
-            self.voice=build_voice(get_settings()); self.speaker=self.voice.speaker
-            if self.speaker: self.speaker.enabled=not self.muted
+        if self.closed or self.preview: return False
+        if self.voice is not None: return True
+        if self.voice_initializing: return False
+        # Even importing NumPy / provider settings must not delay the first orb paint.
+        def build():
+            try:
+                from mitraa.assistant.voice import build_voice
+                from mitraa.config import get_settings
+                settings=get_settings(); voice=build_voice(settings)
+                if self.closed:
+                    if voice.speaker: voice.speaker.close()
+                    return
+                self.bridge.event.emit('voice_initialized',(voice,settings),-1)
+            except Exception as exc:
+                if not self.closed: self.bridge.event.emit('voice_init_error',str(exc),-1)
+        self.voice_initializing=True
+        self.voice_builder=threading.Thread(target=build,name='mitraa-voice-init',daemon=True)
+        self.voice_builder.start()
+        return False
 
-    def listen(self):
+    def start_voice_input(self):
+        if not self.session_open or not self.overlay.isVisible() or self.closed: return
+        if not self.voice.transcriber:
+            self.session_open=False
+            self.show_error('Voice unavailable','Voice input is disabled. Expand the orb and use the keyboard to type.')
+            return
+        from mitraa.assistant.voice import VoiceInput
+        predecessor=self.voice_input.capture_closed if self.voice_input else None
+        token=self.epoch
+        self.voice_input=VoiceInput(self.voice.transcriber,lambda event:self.bridge.event.emit(*event,token),
+                                   settings=self.voice_settings,playback_idle=self.speaker.idle if self.speaker else None,
+                                   predecessor=predecessor)
+        self.inputs=[item for item in self.inputs if item.active]
+        self.inputs.append(self.voice_input); self.voice_input.start()
+
+    def listen(self, *, expanded=False):
         if self.busy or self.pending:
             self.summon(); return
         if self.session_open: return
-        predecessor=self.voice_input.capture_closed if self.voice_input else None
         self.invalidate_audio(); self.session_open=True
         self.transcript=''; self.result_text=''; self.result_card=None; self.progress=''; self.recording_limited=False
-        self.overlay.clear_card(); self.overlay.present(Presentation.ORB_ONLY)
+        self.overlay.typing=False; self.overlay.hide_entry()
+        self.overlay.clear_card()
+        self.overlay.present(Presentation.EXPANDED_DOCK if expanded else Presentation.ORB_ONLY)
         if self.preview:
             self.set_state(State.WAITING_FOR_SPEECH); return
         self.set_state(State.LOADING_VOICE)
-        try:
-            self.ensure_voice()
-            if not self.voice.transcriber:
-                raise RuntimeError('Voice input is disabled. Expand the orb and use the keyboard to type.')
-            from mitraa.assistant.voice import VoiceInput
-            from mitraa.config import get_settings
-            token=self.epoch
-            self.voice_input=VoiceInput(self.voice.transcriber,lambda event:self.bridge.event.emit(*event,token),
-                                        settings=get_settings(),playback_idle=self.speaker.idle if self.speaker else None,
-                                        predecessor=predecessor)
-            self.inputs=[item for item in self.inputs if item.active]
-            self.inputs.append(self.voice_input); self.voice_input.start()
-        except Exception as exc:
-            self.session_open=False; self.show_error('Voice unavailable',str(exc))
+        if self.ensure_voice(): self.start_voice_input()
 
     def submit(self,text,voice=False):
         text=text.strip()
@@ -150,8 +205,8 @@ class Controller(QObject):
             if not self.session_open or self.epoch in self.submitted_sessions: return
             self.submitted_sessions.add(self.epoch)
         self.invalidate_audio()
-        self.overlay.typing=False; self.overlay.entry.hide(); self.overlay.clear_card()
-        self.transcript=text; self.result_text=''; self.overlay.entry.clear(); self.result_card=None
+        self.overlay.typing=False; self.overlay.hide_entry(); self.overlay.clear_card()
+        self.transcript=text; self.result_text=''; self.overlay.clear_entry(); self.result_card=None
         self.expand(); self.set_state(State.THINKING)
         if self.preview:
             self.result_text='[Preview] No request was sent.'; self.set_state(State.IDLE); return
@@ -191,6 +246,16 @@ class Controller(QObject):
     @Slot(str,object,int)
     def handle(self,kind,payload,token=-1):
         if self.closed: return
+        if kind=='voice_initialized':
+            self.voice_initializing=False
+            self.voice,self.voice_settings=payload; self.speaker=self.voice.speaker
+            if self.speaker: self.speaker.enabled=not self.muted
+            self.start_voice_input()
+            return
+        if kind=='voice_init_error':
+            self.voice_initializing=False
+            if self.session_open and self.overlay.isVisible(): self.show_error('Voice unavailable',str(payload))
+            return
         if kind.startswith(('voice_','speech_')) and (token!=self.epoch or not self.overlay.isVisible()): return
         if kind in ('step','response','error') and token!=self.request_id: return
         if kind=='summon': self.summon()
@@ -271,7 +336,18 @@ class Controller(QObject):
         self.overlay.close()
 
 
-def run_qt(preview=False):
+def run_qt(preview=False, startup_settings=None, on_ready=None):
+    # Overlap native hook imports with Qt/font initialization on cold launch.
+    hotkey_errors=[]
+    hotkey_import=None
+    if not preview:
+        def preload_hotkey():
+            try:
+                import pynput.keyboard
+            except Exception as exc:
+                hotkey_errors.append(exc)
+        hotkey_import=threading.Thread(target=preload_hotkey,name='mitraa-hotkey-import',daemon=True)
+        hotkey_import.start()
     app=QApplication.instance() or QApplication([])
     app.setQuitOnLastWindowClosed(False)
     overlay=Overlay(preview); controller=Controller(overlay,preview)
@@ -301,14 +377,18 @@ def run_qt(preview=False):
         action('Preview: typing',controller.type_request)
         controller.listen()
     else:
-        from mitraa.config import get_settings
+        from mitraa.assistant.startup import load_startup_settings
         from mitraa.assistant.hotkey import HoldDetector,HotkeyListener,parse_hotkeys
-        settings=get_settings()
+        settings=startup_settings or load_startup_settings()
         detector=HoldDetector(settings.mitraa_hold_seconds,lambda key:controller.bridge.event.emit('summon',key,-1))
+        hotkey_import.join()
+        if hotkey_errors: raise RuntimeError('Hotkey initialization failed.') from hotkey_errors[0]
         controller.listener=HotkeyListener(parse_hotkeys(settings.mitraa_hotkey),detector)
         controller.use_escape_hook=True
         controller.listener.start()
         action('Pause hotkey',lambda checked:setattr(detector,'enabled',not checked),True)
+        if settings.mitraa_voice_preload:
+            QTimer.singleShot(250,controller.ensure_voice)  # no capture until an explicit session
     action('Quit',app.quit)
     tray.setContextMenu(menu)
     tray.activated.connect(lambda reason:controller.summon() if reason==QSystemTrayIcon.Trigger else None)
@@ -316,4 +396,5 @@ def run_qt(preview=False):
     app.aboutToQuit.connect(controller.shutdown); app.aboutToQuit.connect(tray.hide)
     signal.signal(signal.SIGINT,lambda *_:app.quit())
     timer=QTimer(); timer.timeout.connect(lambda:None); timer.start(250)
+    if on_ready is not None: QTimer.singleShot(0,on_ready)
     return app.exec()

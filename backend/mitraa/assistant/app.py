@@ -7,10 +7,11 @@ import logging
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 from mitraa.assistant.hotkey import KeySpec, detect_keys
-from mitraa.config import BACKEND_DIR, get_settings
+from mitraa.assistant.startup import BACKEND_DIR, load_startup_settings
 
 logger = logging.getLogger("mitraa.assistant")
 
@@ -47,14 +48,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run(preview: bool = False) -> int:
-    from mitraa.assistant.ui.controller import run_qt
-    _setup_logging(get_settings().mitraa_log_level)
+    started_at = time.perf_counter()
+    settings = load_startup_settings()
+    _setup_logging(settings.mitraa_log_level)
     lock = None if preview else _single_instance_lock()
     if not preview and lock is None:
         _say("Mitraa assistant is already running (look for its tray icon).")
         return 1
     try:
-        return run_qt(preview)
+        from mitraa.assistant.ui.controller import run_qt
+        return run_qt(preview, startup_settings=settings,
+                      on_ready=lambda: logger.info("Desktop ready in %.3fs", time.perf_counter()-started_at))
     finally:
         if lock is not None:
             lock.close()

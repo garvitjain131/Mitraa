@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QWidget
 
 class Orb(QWidget):
     clicked = Signal()
+    double_clicked = Signal()
     dragged = Signal(object)
     released = Signal()
 
@@ -51,6 +52,15 @@ class Orb(QWidget):
             if not self.dragging: self.clicked.emit()
             self.anchor = None
             self.released.emit()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            # Qt already delivered the first click. Suppress the second release
+            # so collapsing cannot immediately reopen the dock.
+            self.anchor = None
+            self.dragging = False
+            self.double_clicked.emit()
+            event.accept()
 
     def paintEvent(self, event):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)

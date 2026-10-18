@@ -40,6 +40,7 @@ class Overlay(QWidget):
     decision = Signal(bool)
     preview_next = Signal()
     orb_clicked = Signal()
+    orb_double_clicked = Signal()
     visibility_changed = Signal(bool)
 
     def __init__(self, preview=False):
@@ -62,6 +63,7 @@ class Overlay(QWidget):
         self.orb = Orb(); self.orb.setParent(self)
         self.orb.reduced = self.preferences.value('reduced_motion', False, type=bool)
         self.orb.clicked.connect(self.orb_clicked.emit)
+        self.orb.double_clicked.connect(self.orb_double_clicked.emit)
         self.orb.dragged.connect(self.drag_by); self.orb.released.connect(self.save_position)
         self.content = QWidget(self)
         self.fade = QGraphicsOpacityEffect(self.content); self.content.setGraphicsEffect(self.fade)
@@ -69,8 +71,7 @@ class Overlay(QWidget):
         self.status = QLabel('Ready', self.content); self.status.setObjectName('state')
         self.preview_text = QLabel('', self.content)
         self.waveform = Waveform(self.content)
-        self.entry = QLineEdit(self.content); self.entry.setPlaceholderText('Type a request…'); self.entry.hide()
-        self.entry.returnPressed.connect(lambda: self.submitted.emit(self.entry.text()))
+        self._entry = None
         self.buttons = []
         for kind, tip, signal in [('keyboard','Type a request',self.keyboard_requested), ('microphone','Start a new utterance',self.mic_requested), ('dismiss','Dismiss',self.dismiss_requested)]:
             button = QPushButton(self.content); button.setFixedSize(30,30)
@@ -80,8 +81,8 @@ class Overlay(QWidget):
         self.card = QFrame(self); self.card.setObjectName('card'); self.card.setFixedWidth(360)
         layout = QVBoxLayout(self.card); layout.setContentsMargins(14,13,14,13); layout.setSpacing(9)
         self.title = QLabel(); self.title.setObjectName('heading'); self.title.setWordWrap(True); layout.addWidget(self.title)
-        self.body = QTextBrowser(); self.body.setOpenExternalLinks(False); self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.body.document().setDocumentMargin(0); layout.addWidget(self.body)
+        self._body = None
+        self.card_layout = layout
         self.details = QPushButton('Technical details'); self.details.clicked.connect(self.toggle_details); layout.addWidget(self.details)
         decisions = QHBoxLayout(); self.deny = QPushButton('Deny'); self.allow = QPushButton('Allow')
         self.allow.setStyleSheet('color: #ffc985; border-color: #83633e;')
@@ -92,6 +93,29 @@ class Overlay(QWidget):
         app = QApplication.instance()
         app.screenAdded.connect(self.screen_added); app.screenRemoved.connect(lambda _: self.refresh())
         for screen in app.screens(): self.screen_added(screen)
+
+    @property
+    def entry(self):
+        if self._entry is None:
+            self._entry=QLineEdit(self.content)
+            self._entry.setPlaceholderText('Type a request…'); self._entry.hide()
+            self._entry.returnPressed.connect(lambda:self.submitted.emit(self._entry.text()))
+        return self._entry
+
+    @property
+    def body(self):
+        if self._body is None:
+            self._body=QTextBrowser(); self._body.setOpenExternalLinks(False)
+            self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self._body.document().setDocumentMargin(0)
+            self.card_layout.insertWidget(1,self._body)
+        return self._body
+
+    def hide_entry(self):
+        if self._entry is not None: self._entry.hide()
+
+    def clear_entry(self):
+        if self._entry is not None: self._entry.clear()
 
     def screen_added(self, screen):
         screen.availableGeometryChanged.connect(lambda _: self.refresh())
@@ -139,7 +163,7 @@ class Overlay(QWidget):
         area = screen.availableGeometry()
         self.dock_width = min(456, area.width())
         # Use font metrics to keep the center usable when accessibility font size rises.
-        self.row_height = max(88, self.fontMetrics().height()*4+16)
+        self.row_height = max(88, self.fontMetrics().height()*4+16) if self._progress > 0 else 88
         width = round(88 + (self.dock_width-88)*self._progress)
         card_height = self.fit_body() if self._card_visible else 0
         self.base_y = card_height+10 if self._card_visible else 0
@@ -158,7 +182,7 @@ class Overlay(QWidget):
         self.status.setGeometry(0,25,center_width,17)
         self.preview_text.setGeometry(0,43,center_width,18)
         self.waveform.setGeometry(0,43,center_width,20)
-        self.entry.setGeometry(0,29,center_width,30)
+        if self._entry is not None: self._entry.setGeometry(0,29,center_width,30)
         for i, button in enumerate(self.buttons):
             button.move(self.content.width()-104+i*35, (self.content.height()-30)//2)
         self.content.setVisible(self._progress > 0)
@@ -207,12 +231,14 @@ class Overlay(QWidget):
         presentation = Presentation(presentation)
         self.animation.stop()
         self.presentation = presentation
+        self.orb.setToolTip('Click to toggle listening · double-click to collapse · drag to move'
+                            if presentation == Presentation.EXPANDED_DOCK else 'Click to expand · drag to move')
         if presentation == Presentation.HIDDEN:
             self.hide(); return
         if not self.isVisible(): self.show()
         target = 1. if presentation == Presentation.EXPANDED_DOCK else 0.
         if target == 0:
-            self._card_visible = False; self.typing = False; self.entry.hide()
+            self._card_visible = False; self.typing = False; self.hide_entry()
         if animate and not self.orb.reduced and abs(self._progress-target) > .01:
             self.animation.setStartValue(self._progress); self.animation.setEndValue(target); self.animation.start()
         else:
@@ -225,8 +251,11 @@ class Overlay(QWidget):
 
     def set_status(self, text, content='', waveform=False):
         self.status.setText(text); self.status.setToolTip(text)
-        self.status.setText(self.status.fontMetrics().elidedText(text,Qt.ElideRight,max(80,self.content.width()-112)))
-        self.preview_text.setText(self.preview_text.fontMetrics().elidedText(content,Qt.ElideRight,max(80,self.content.width()-112)))
+        if self._progress > 0:
+            self.status.setText(self.status.fontMetrics().elidedText(text,Qt.ElideRight,max(80,self.content.width()-112)))
+            self.preview_text.setText(self.preview_text.fontMetrics().elidedText(content,Qt.ElideRight,max(80,self.content.width()-112)))
+        else:
+            self.preview_text.setText(content)
         self.preview_text.setToolTip(content)
         self.waveform.setVisible(waveform and not self.typing)
         self.preview_text.setVisible(not waveform and not self.typing)
@@ -236,6 +265,7 @@ class Overlay(QWidget):
         self._card_visible=False; self.typing=True
         self.present(Presentation.EXPANDED_DOCK)
         self.entry.show(); self.status.hide(); self.waveform.hide(); self.preview_text.hide()
+        self.refresh()
         self.activateWindow(); self.raise_(); self.entry.setFocus(Qt.OtherFocusReason)
 
     def fit_body(self):
@@ -254,7 +284,7 @@ class Overlay(QWidget):
         self.refresh()
 
     def show_card(self,title,text='',approval=False,details=False):
-        self._card_visible=True; self.typing=False; self.entry.hide()
+        self._card_visible=True; self.typing=False; self.hide_entry()
         self.title.setText(title); self.body.setPlainText(text)
         self.body.setVisible(bool(text) and not details); self.details.setVisible(details); self.details.setText('Technical details')
         self.deny.setVisible(approval); self.allow.setVisible(approval)

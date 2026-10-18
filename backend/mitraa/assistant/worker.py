@@ -3,11 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
-from mitraa.agent.llm import LLMError, NemotronClient
-from mitraa.agent.orchestrator import AgentResponse, Orchestrator
-from mitraa.config import get_settings
-from mitraa.db.session import default_session_factory
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from mitraa.agent.orchestrator import AgentResponse, Orchestrator
 logger = logging.getLogger(__name__)
 Event = tuple[str, Any, int]
 
@@ -46,6 +44,10 @@ class AgentWorker:
 
     def _ensure_agent(self) -> Orchestrator:
         if self._agent is None:
+            from mitraa.agent.llm import NemotronClient
+            from mitraa.agent.orchestrator import Orchestrator
+            from mitraa.config import get_settings
+            from mitraa.db.session import default_session_factory
             settings = get_settings()
             llm = NemotronClient(settings)
             session = default_session_factory()()
@@ -66,9 +68,11 @@ class AgentWorker:
             response = action(self._ensure_agent())
             self.conversation_id = response.conversation_id
             self._emit("response", response)
-        except LLMError as exc:
-            self._emit("error", {"message": "Connect your AI provider to chat.", "details": str(exc), "provider_setup": not all((get_settings().nebius_api_key, get_settings().nebius_base_url, get_settings().nemotron_model))})
-        except Exception as exc:  # keep the assistant alive whatever happens
-            logger.exception("Agent call failed")
-            self._emit("error", {"message": "The request could not be completed. Please try again.", "details": f"{type(exc).__name__}: {exc}"})
-
+        except Exception as exc:
+            from mitraa.config import get_settings
+            settings = get_settings()
+            missing = not all((settings.nebius_api_key, settings.nebius_base_url, settings.nemotron_model))
+            if not missing:
+                logger.exception("Agent call failed")
+            self._emit("error", {"message": "Connect your AI provider to chat." if missing else "The request could not be completed. Please try again.",
+                                 "details": f"{type(exc).__name__}: {exc}", "provider_setup": missing})
