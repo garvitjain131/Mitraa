@@ -14,7 +14,7 @@ import re
 import sys
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,86 +32,8 @@ INITIAL_PROMPT = "Hey Mitraa. Mera resume.pdf Downloads mein move karo. Move not
 Post = Callable[[tuple[str, Any]], None]
 
 
-# ---------------------------------------------------------------- end-of-speech detection
-
-@dataclass
-class Endpointer:
-    """Decides, frame by frame, when the user has started and finished speaking.
-
-    feed(rms) returns None to keep listening, or "end" / "no_speech" / "max".
-    The noise floor is learned from the first calibration_seconds of audio.
-    """
-
-    frame_seconds: float = FRAME_SECONDS
-    calibration_seconds: float = 0.25
-    start_timeout: float = 7.0
-    end_silence: float = 1.1
-    max_seconds: float = 20.0
-    min_threshold: float = 0.006
-    max_threshold: float = 0.05
-    ratio: float = 2.5
-    frames_to_start: int = 3
-    threshold: float | None = None
-    speech_started: bool = False
-    _levels: list[float] = field(default_factory=list)
-    _frames: int = 0
-    _loud_run: int = 0
-    _quiet_run: int = 0
-
-    def feed(self, rms: float) -> str | None:
-        self._frames += 1
-        elapsed = self._frames * self.frame_seconds
-        if self.threshold is None:
-            self._levels.append(rms)
-            if elapsed >= self.calibration_seconds:
-                floor = sorted(self._levels)[len(self._levels) // 5]
-                self.threshold = min(self.max_threshold, max(self.min_threshold, floor * self.ratio))
-            return None
-
-        loud = rms >= self.threshold
-        if not self.speech_started:
-            self._loud_run = self._loud_run + 1 if loud else 0
-            if self._loud_run >= self.frames_to_start:
-                self.speech_started = True
-            elif elapsed >= self.start_timeout:
-                return "no_speech"
-        else:
-            self._quiet_run = 0 if loud else self._quiet_run + 1
-            if self._quiet_run * self.frame_seconds >= self.end_silence:
-                return "end"
-        if elapsed >= self.max_seconds:
-            return "max" if self.speech_started else "no_speech"
-        return None
-
-
-def record_until_silence(
-    endpointer: Endpointer,
-    on_level: Callable[[float], None],
-    cancel: threading.Event,
-) -> tuple[str, np.ndarray | None]:
-    """Record from the default microphone until the endpointer says stop.
-
-    Returns (outcome, audio) where outcome is "end", "max", "no_speech" or "cancelled".
-    """
-    import sounddevice as sd
-
-    block = int(SAMPLE_RATE * endpointer.frame_seconds)
-    frames: list[np.ndarray] = []
-    outcome = "cancelled"
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=block) as stream:
-        while not cancel.is_set():
-            data, _overflowed = stream.read(block)
-            mono = data[:, 0].copy()
-            frames.append(mono)
-            rms = float(np.sqrt(np.mean(mono * mono)))
-            on_level(rms)
-            result = endpointer.feed(rms)
-            if result:
-                outcome = result
-                break
-    if outcome in ("end", "max"):
-        return outcome, np.concatenate(frames)
-    return outcome, None
+# Public re-exports keep one recorder and detector for all desktop callers.
+from mitraa.assistant.utterance import Endpointer, record_until_silence
 
 
 # ---------------------------------------------------------------- speech-to-text
@@ -162,7 +84,8 @@ class Transcriber:
             for device, compute_type in attempts:
                 try:
                     model = WhisperModel(self.model_name, device=device, compute_type=compute_type)
-                    model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)  # warm-up / load check
+                    warmup, _ = model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)
+                    list(warmup)  # execute lazy decoding before marking the model ready
                     self._model = model
                     self.description = f"Whisper {self.model_name} on {device.upper()}"
                     logger.info("Speech model ready: %s", self.description)
@@ -177,7 +100,7 @@ class Transcriber:
         finally:
             self.ready.set()
 
-    def transcribe(self, audio: np.ndarray, timeout: float = 300) -> tuple[str, str]:
+    def transcribe(self, audio: np.ndarray, timeout: float = 300, *, short: bool = False, min_logprob: float = -1.0, max_no_speech: float = .6) -> tuple[str, str]:
         """Returns (text, language). Raises RuntimeError if the model isn't usable."""
         if not self.ready.wait(timeout):
             raise RuntimeError("The speech model is still loading.")
@@ -192,16 +115,31 @@ class Transcriber:
                 initial_prompt=INITIAL_PROMPT,
                 condition_on_previous_text=False,
             )
-            text = " ".join(segment.text.strip() for segment in segments).strip()
+            # Apply metadata before any text can reach the agent. A short command
+            # is allowed when confidence is strong; text length alone is not a veto.
+            accepted = []
+            cutoff = max(min_logprob, -.65) if short else min_logprob
+            for segment in segments:
+                if (segment.no_speech_prob <= max_no_speech and segment.avg_logprob >= cutoff
+                        and segment.compression_ratio <= 2.4):
+                    text = segment.text.strip()
+                    if any(character.isalnum() for character in text):
+                        accepted.append(text)
+            text = " ".join(accepted).strip()
         return text, info.language
 
 
 class VoiceInput:
     """One listen -> transcribe cycle at a time, reporting progress through post()."""
 
-    def __init__(self, transcriber: Transcriber, post: Post) -> None:
+    def __init__(self, transcriber: Transcriber, post: Post, settings: Settings | None = None, playback_idle: threading.Event | None = None, predecessor: threading.Event | None = None) -> None:
         self.transcriber = transcriber
         self.post = post
+        self.settings = settings or Settings()
+        self.playback_idle = playback_idle
+        self.predecessor = predecessor
+        self.capture_closed = threading.Event()
+        self.capture_closed.set()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -213,34 +151,68 @@ class VoiceInput:
         if self.active:
             return
         self._cancel = threading.Event()
+        self.capture_closed.clear()
         self._thread = threading.Thread(target=self._run, args=(self._cancel,), name="mitraa-listen", daemon=True)
         self._thread.start()
 
     def cancel(self) -> None:
         self._cancel.set()
 
+    def close(self) -> None:
+        self.cancel()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+
     def _run(self, cancel: threading.Event) -> None:
         try:
-            self.post(("voice_state", "listening"))
-            outcome, audio = record_until_silence(Endpointer(), lambda rms: self.post(("voice_level", rms)), cancel)
-            if outcome == "cancelled":
-                self.post(("voice_state", "idle"))
-                return
-            if audio is None:
-                self.post(("voice_none", "I didn't hear anything."))
-                return
-            self.post(("voice_state", "transcribing" if self.transcriber.ready.is_set() else "loading"))
-            text, language = self.transcriber.transcribe(audio)
+            self.post(('voice_state', 'loading_voice'))
+            # No capture during loading or while the speaker is still purging.
+            while not self.transcriber.ready.wait(.1):
+                if cancel.is_set():
+                    return
             if cancel.is_set():
-                self.post(("voice_state", "idle"))
-            elif text:
-                logger.info("Heard %.1fs of speech (language: %s)", len(audio) / SAMPLE_RATE, language)
-                self.post(("voice_text", text))
-            else:
-                self.post(("voice_none", "I couldn't make that out."))
+                return
+            if self.transcriber.error:
+                raise RuntimeError(self.transcriber.error)
+            if self.playback_idle:
+                while not self.playback_idle.wait(.1):
+                    if cancel.is_set():
+                        return
+            if cancel.is_set():
+                return
+            if self.predecessor:
+                while not self.predecessor.wait(.1):
+                    if cancel.is_set(): return
+            if cancel.is_set(): return
+            endpointer = Endpointer.from_settings(self.settings)
+            outcome, audio = record_until_silence(
+                endpointer, lambda rms: self.post(('voice_level', rms)), cancel,
+                on_state=lambda state: self.post(('voice_state', state)),
+                vad_mode=self.settings.mitraa_vad_mode)
+            self.capture_closed.set()
+            if cancel.is_set() or outcome == 'cancelled':
+                return
+            if audio is None or not len(audio):
+                self.post(('voice_none', "I didn’t catch anything. Tap the microphone to try again."))
+                return
+            # Recorder has exited its stream context before this event is sent.
+            self.post(('voice_endpoint', outcome))
+            self.post(('voice_state', 'transcribing'))
+            text, _ = self.transcriber.transcribe(
+                audio, short=endpointer.short_speech,
+                min_logprob=self.settings.mitraa_stt_min_logprob,
+                max_no_speech=self.settings.mitraa_stt_max_no_speech)
+            if not cancel.is_set():
+                if text:
+                    self.post(('voice_text', text))
+                else:
+                    self.post(('voice_none', "I couldn’t make that out. Tap the microphone to try again."))
         except Exception as exc:
-            logger.exception("Voice input failed")
-            self.post(("voice_error", _microphone_hint(exc)))
+            if not cancel.is_set():
+                logger.exception('Voice input failed')
+                self.post(('voice_error', _microphone_hint(exc)))
+        finally:
+            self.capture_closed.set()
 
 
 def _microphone_hint(exc: Exception) -> str:
@@ -300,30 +272,47 @@ class Speaker:
     _ASYNC, _PURGE = 1, 2
 
     def __init__(self, voice_name: str, rate: int = 0) -> None:
+        self.post: Post = lambda event: None
+        self._generation = 0
+        self._state_lock = threading.Lock()
+        self.idle = threading.Event()
+        self.idle.set()
+        self._thread: threading.Thread | None = None
         self.voice_name = voice_name
         self.rate = rate
         self.enabled = True
         self.available = sys.platform == "win32"
         self.voice_description = ""
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self.error = "Speech output is unavailable on this platform." if not self.available else ""
+        self._queue: queue.Queue[Any] = queue.Queue()
         self._interrupt = threading.Event()
         if self.available:
-            threading.Thread(target=self._run, name="mitraa-speaker", daemon=True).start()
+            self._thread = threading.Thread(target=self._run, name="mitraa-speaker", daemon=True)
+            self._thread.start()
 
     def say(self, text: str) -> None:
-        if not (self.enabled and self.available):
+        if not self.enabled:
+            return
+        if not self.available:
+            self.post(("speech_error", self.error or "Speech output is unavailable."))
             return
         spoken = speakable(text)
         if spoken:
-            self._interrupt.set()
-            self._queue.put(spoken)
+            with self._state_lock:
+                self.idle.clear()
+                self._interrupt.set()
+                self._queue.put((spoken, self.post, self._generation))
 
     def stop(self) -> None:
-        self._interrupt.set()
+        with self._state_lock:
+            self._generation += 1
+            self._interrupt.set()
 
     def close(self) -> None:
         self._interrupt.set()
         self._queue.put(None)
+        if self._thread:
+            self._thread.join(timeout=2)
 
     def _run(self) -> None:
         try:
@@ -334,9 +323,15 @@ class Speaker:
             voice = comtypes.client.CreateObject("SAPI.SpVoice")
             self._select_voice(voice, comtypes.client)
             voice.Rate = max(-10, min(10, self.rate))
-        except Exception:
+        except Exception as exc:
+            self.error = f"Speech output unavailable: {exc}"
             logger.exception("Text-to-speech unavailable")
             self.available = False
+            self.idle.set()
+            while not self._queue.empty():
+                pending = self._queue.get_nowait()
+                if pending is not None:
+                    pending[1](("speech_error", self.error))
             return
 
         while True:
@@ -346,17 +341,40 @@ class Speaker:
             while not self._queue.empty():  # only the newest reply matters
                 newer = self._queue.get()
                 if newer is None:
+                    voice.Speak("", self._ASYNC | self._PURGE)
+                    comtypes.CoUninitialize()
                     return
                 text = newer
-            self._interrupt.clear()
+            text, post, generation = text
             try:
-                voice.Speak(text, self._ASYNC | self._PURGE)
-                while not voice.WaitUntilDone(100):
+                with self._state_lock:
+                    if generation != self._generation:
+                        self.idle.set()
+                        continue
+                    self._interrupt.clear()
+                    voice.Speak(text, self._ASYNC | self._PURGE)
+                started = False
+                stopped = False
+                while True:
+                    # SAPI's running state confirms playback, rather than estimating
+                    # a duration or treating the queued Speak call as sound output.
+                    if not started and voice.Status.RunningState == 2:
+                        started = True
+                        post(("speech_started", None))
+                    if voice.WaitUntilDone(30):
+                        break
                     if self._interrupt.is_set():
                         voice.Speak("", self._ASYNC | self._PURGE)
+                        stopped = True
                         break
-            except Exception:
+                self.idle.set()
+                post(("speech_stopped" if stopped else "speech_finished", None))
+            except Exception as exc:
+                self.idle.set()
+                post(("speech_error", str(exc)))
                 logger.exception("Speaking failed")
+        voice.Speak("", self._ASYNC | self._PURGE)
+        comtypes.CoUninitialize()
 
     def _select_voice(self, voice: Any, client: Any) -> None:
         tokens: list[Any] = []

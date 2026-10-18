@@ -170,6 +170,7 @@ class HotkeyListener:
         self.detector = detector
         self.tick_interval = tick_interval
         self._listener = None
+        self._tick_thread = None
         self._stop = threading.Event()
         if detector.is_down is None and sys.platform == "win32":
             detector.is_down = self.is_physically_down
@@ -216,13 +217,18 @@ class HotkeyListener:
 
         self._listener = keyboard.Listener(win32_event_filter=event_filter)
         self._listener.start()
-        threading.Thread(target=self._tick_loop, name="mitraa-hotkey-tick", daemon=True).start()
+        self._tick_thread = threading.Thread(target=self._tick_loop, name="mitraa-hotkey-tick", daemon=True)
+        self._tick_thread.start()
         logger.info("Hotkey listener started for: %s", ", ".join(dict.fromkeys(k.label for k in self.keys)))
 
     def stop(self) -> None:
         self._stop.set()
         if self._listener is not None:
             self._listener.stop()
+            if self._listener is not threading.current_thread():
+                self._listener.join(timeout=1)
+        if self._tick_thread and self._tick_thread is not threading.current_thread():
+            self._tick_thread.join(timeout=1)
 
     def _tick_loop(self) -> None:
         while not self._stop.wait(self.tick_interval):

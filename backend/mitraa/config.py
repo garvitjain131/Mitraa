@@ -7,6 +7,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -49,6 +50,18 @@ class Settings(BaseSettings):
     mitraa_stt_language: str = ""  # empty = auto-detect (English, Hindi, Hinglish, ...)
     mitraa_tts_voice: str = "Heera"  # part of a Windows voice name, e.g. Heera, Ravi, Zira
     mitraa_tts_rate: int = 1  # -10 (slow) .. 10 (fast)
+
+    # Local utterance detection (WebRTC VAD, 16 kHz / 30 ms frames).
+    mitraa_vad_mode: int = Field(default=2, ge=0, le=3)
+    mitraa_speech_onset_ms: int = Field(default=150, ge=90, le=300)
+    mitraa_min_speech_ms: int = Field(default=270, ge=150, le=600)
+    mitraa_end_silence: float = Field(default=1.0, ge=.3, le=3)
+    mitraa_no_speech_timeout: float = Field(default=8, ge=2, le=30)
+    mitraa_max_utterance: float = Field(default=30, ge=3, le=120)
+    mitraa_preroll_ms: int = Field(default=300, ge=250, le=500)
+    mitraa_trailing_ms: int = Field(default=200, ge=100, le=400)
+    mitraa_stt_min_logprob: float = Field(default=-1.0, ge=-3, le=0)
+    mitraa_stt_max_no_speech: float = Field(default=.6, ge=0, le=1)
 
     @property
     def allowed_roots(self) -> list[Path]:

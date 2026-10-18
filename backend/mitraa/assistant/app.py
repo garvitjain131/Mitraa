@@ -7,10 +7,9 @@ import logging
 import os
 import socket
 import sys
-import tkinter as tk
 from pathlib import Path
 
-from mitraa.assistant.hotkey import HoldDetector, HotkeyListener, KeySpec, detect_keys, parse_hotkeys
+from mitraa.assistant.hotkey import KeySpec, detect_keys
 from mitraa.config import BACKEND_DIR, get_settings
 
 logger = logging.getLogger("mitraa.assistant")
@@ -30,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detect", action="store_true", help="show raw key codes (use this to check your Fn key)")
     parser.add_argument("--install-startup", action="store_true", help="start the assistant when Windows starts")
     parser.add_argument("--uninstall-startup", action="store_true", help="stop starting with Windows")
+    parser.add_argument("--preview", action="store_true", help="offline orb preview; no microphone or agent")
     args = parser.parse_args(argv)
 
     if hasattr(sys.stdout, "reconfigure") and sys.stdout is not None:
@@ -43,80 +43,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.uninstall_startup:
         print("Removed." if uninstall_startup() else "It was not installed.")
         return 0
-    return run()
+    return run(preview=args.preview)
 
 
-def run() -> int:
+def run(preview: bool = False) -> int:
+    from mitraa.assistant.ui.controller import run_qt
     _setup_logging(get_settings().mitraa_log_level)
-    lock = _single_instance_lock()
-    if lock is None:
+    lock = None if preview else _single_instance_lock()
+    if not preview and lock is None:
         _say("Mitraa assistant is already running (look for its tray icon).")
         return 1
-
-    settings = get_settings()
     try:
-        keys = parse_hotkeys(settings.mitraa_hotkey)
-    except ValueError as exc:
-        _say(f"Bad MITRAA_HOTKEY in .env: {exc}")
-        return 1
-    hint = describe_keys(keys)
-
-    _enable_dpi_awareness()
-    root = tk.Tk()
-    root.withdraw()
-    # pythonw has no stderr: send UI errors to the log instead of losing them
-    root.report_callback_exception = lambda *exc: logger.error("UI error", exc_info=exc)
-
-    from mitraa.assistant.popup import AssistantWindow
-    from mitraa.assistant.tray import start_tray
-    from mitraa.assistant.voice import build_voice
-
-    voice = build_voice(settings)  # Whisper loads in the background
-    window = AssistantWindow(root, hint, voice)
-    detector = HoldDetector(settings.mitraa_hold_seconds, lambda key: window.events.put(("summon", key)))
-    listener = HotkeyListener(keys, detector)
-    tray = None
-
-    def quit_app() -> None:
-        listener.stop()
-        if tray is not None:
-            tray.stop()
-        window.worker.shutdown()
-        if window.voice_input:
-            window.voice_input.cancel()
-        if voice.speaker:
-            voice.speaker.close()
-        root.quit()
-
-    def toggle_pause() -> None:
-        detector.enabled = not detector.enabled
-
-    window.on_quit = quit_app
-    try:
-        listener.start()
-    except RuntimeError as exc:
-        _say(str(exc))
-        return 1
-    try:
-        tray = start_tray(
-            f"Mitraa: hold {hint} for {settings.mitraa_hold_seconds:g}s",
-            on_open=lambda: window.events.put(("summon", "tray")),
-            on_toggle_pause=toggle_pause,
-            is_paused=lambda: not detector.enabled,
-            on_quit=lambda: window.events.put(("quit", None)),
-            greeting=f"Hold {hint} for {settings.mitraa_hold_seconds:g} seconds, then just talk.",
-        )
-    except Exception:
-        logger.exception("Tray icon unavailable; continuing without it")
-
-    _say(f"Mitraa assistant running. Hold {hint} for {settings.mitraa_hold_seconds:g} seconds. Ctrl+C or tray → Quit to exit.")
-    try:
-        root.mainloop()
-    except KeyboardInterrupt:
-        quit_app()
+        return run_qt(preview)
     finally:
-        lock.close()
-    return 0
+        if lock is not None:
+            lock.close()
 
 
 # ---------------------------------------------------------------- helpers
@@ -142,16 +83,6 @@ def _single_instance_lock() -> socket.socket | None:
         sock.close()
         return None
     return sock
-
-
-def _enable_dpi_awareness() -> None:
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
-        except (AttributeError, OSError):
-            pass
 
 
 def _startup_dir() -> Path:

@@ -9,62 +9,6 @@ import pytest
 
 from mitraa.assistant.voice import Endpointer, Speaker, Transcriber, pick_voice, speakable
 
-QUIET, SPEECH = 0.002, 0.05
-
-
-def run(endpointer: Endpointer, levels: list[float]) -> tuple[str | None, int]:
-    for index, level in enumerate(levels):
-        result = endpointer.feed(level)
-        if result:
-            return result, index + 1
-    return None, len(levels)
-
-
-def frames(seconds: float, level: float) -> list[float]:
-    return [level] * round(seconds / 0.03)
-
-
-def test_speech_then_silence_ends():
-    ep = Endpointer()
-    result, used = run(ep, frames(0.3, QUIET) + frames(2.0, SPEECH) + frames(2.0, QUIET))
-    assert result == "end" and ep.speech_started
-    assert used * 0.03 == pytest.approx(0.3 + 2.0 + 1.1, abs=0.1)
-
-
-def test_short_pauses_do_not_end_speech():
-    ep = Endpointer()
-    levels = frames(0.3, QUIET)
-    for _ in range(4):  # words with 0.5s gaps
-        levels += frames(0.6, SPEECH) + frames(0.5, QUIET)
-    result, _ = run(ep, levels)
-    assert result is None and ep.speech_started
-
-
-def test_no_speech_times_out():
-    result, used = run(Endpointer(start_timeout=3.0), frames(5, QUIET))
-    assert result == "no_speech" and used * 0.03 == pytest.approx(3.0, abs=0.1)
-
-
-def test_click_is_not_speech():
-    ep = Endpointer(start_timeout=2.0)
-    result, _ = run(ep, frames(0.3, QUIET) + [SPEECH, SPEECH] + frames(3, QUIET))  # 2 loud frames only
-    assert result == "no_speech"
-
-
-def test_max_length():
-    result, used = run(Endpointer(max_seconds=5), frames(0.3, QUIET) + frames(10, SPEECH))
-    assert result == "max" and used * 0.03 == pytest.approx(5, abs=0.1)
-
-
-def test_threshold_adapts_to_noise_but_is_capped():
-    noisy = Endpointer()
-    run(noisy, frames(0.3, 0.01))
-    assert noisy.threshold == pytest.approx(0.025)
-    very_noisy = Endpointer()
-    run(very_noisy, frames(0.3, 0.2))
-    assert very_noisy.threshold == very_noisy.max_threshold
-
-
 def test_speakable_cleans_reply():
     text = r"**Moved** resume.pdf to C:\Users\Asus\Downloads. Say 'undo' to revert. See https://example.com/x"
     spoken = speakable(text)
@@ -103,3 +47,38 @@ def test_whisper_transcribes_sample():
     transcriber.load_async()
     text, language = transcriber.transcribe(audio)
     assert "resume" in text.lower() and language == "en"
+
+@pytest.mark.parametrize('outcome', ['finished', 'stopped', 'error'])
+def test_speaker_reports_actual_playback_lifecycle(monkeypatch, outcome):
+    import queue
+    import threading
+    import sys
+    from types import ModuleType
+    events=[]
+    speaker=Speaker.__new__(Speaker)
+    speaker._queue=queue.Queue(); speaker._interrupt=threading.Event()
+    speaker._generation=0; speaker.rate=0
+    speaker._state_lock=threading.Lock()
+    speaker.idle=threading.Event(); speaker.idle.set()
+    speaker._select_voice=lambda *_: None
+    class Engine:
+        from types import SimpleNamespace
+        Status = SimpleNamespace(RunningState=2)
+        def Speak(self, text, flags):
+            if text and outcome == 'error': raise RuntimeError('audio unavailable')
+        def WaitUntilDone(self, timeout):
+            if outcome == 'stopped':
+                speaker._interrupt.set()
+                return False
+            return True
+    com=ModuleType('comtypes'); client=ModuleType('comtypes.client')
+    com.CoInitialize=lambda: None; com.CoUninitialize=lambda: None
+    client.CreateObject=lambda *_: Engine(); com.client=client
+    monkeypatch.setitem(sys.modules,'comtypes',com); monkeypatch.setitem(sys.modules,'comtypes.client',client)
+    def post(event):
+        events.append(event[0])
+        if event[0] in ('speech_finished','speech_stopped','speech_error'):
+            speaker._queue.put(None)
+    speaker._queue.put(('Hello',post,0))
+    speaker._run()
+    assert events == (['speech_error'] if outcome == 'error' else ['speech_started', 'speech_'+outcome])

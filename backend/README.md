@@ -91,39 +91,58 @@ Invoke-RestMethod "http://127.0.0.1:8000/projects/$($project.id)/schedule"
 Invoke-RestMethod "http://127.0.0.1:8000/projects/$($project.id)/simulate" -Method Post -ContentType application/json -Body '{"type":"member_unavailable","member":"You","days":1}'
 ```
 
-### Desktop assistant (hold a key to summon)
+### Adaptive desktop assistant
 
 ```powershell
-python -m mitraa.assistant                     # runs in the background with a tray icon
-python -m mitraa.assistant --detect            # shows raw key codes (for choosing a different key)
-python -m mitraa.assistant --install-startup   # start automatically with Windows
+python -m mitraa.assistant                     # hidden until explicitly summoned
+python -m mitraa.assistant --preview           # completely offline UI demonstration
+python -m mitraa.assistant --detect            # raw trigger key discovery; Esc stops
+python -m mitraa.assistant --install-startup
 python -m mitraa.assistant --uninstall-startup
 ```
 
-Hold **Ctrl** (left or right) on its own for 3 seconds and a "What do you want?" window opens on top of everything. Type a request and press Enter. Steps appear live, and risky actions show **Allow / Deny** buttons (Deny has focus by default). Press Esc to hide the window and Ctrl+N to start a new chat. The tray icon has Open, Pause hotkey and Quit.
+Hold **Ctrl alone for three seconds**, or choose **Open (listen)** in the tray. Only a 72-logical-pixel glass orb appears, without stealing focus. Voice loading has a distinct circulating accent. Capture starts only once the local speech model is ready and playback has stopped; its microphone-driven glow indicates recording. There is no continuous hidden recording or automatic follow-up listening. Normal launch does not require provider keys.
 
-- **Changing the key:** set `MITRAA_HOTKEY` in `.env`, e.g. `ctrl_r`, `menu`, `pause`, `f12` or a raw code like `vk:255`. Fn can't be used on this laptop because the keyboard never sends it to Windows.
-- **Shortcuts are safe:** Ctrl only counts when held alone. Ctrl+C, Ctrl+S and other shortcuts never trigger the assistant, even if you keep Ctrl down afterwards.
-- **`--detect` sees every key you press** while it runs. Use it briefly and press Esc to stop it.
+Click the circle to reveal a 456-by-88 logical-pixel horizontal dock while the same recording continues. The same Orb instance and animation clock persist: internal teal currents turn clockwise in 14 seconds, amber currents counterclockwise in 22 seconds, and the glass boundary stays steady. The dock reveals to the right over 300 ms with width and opacity easing. It keeps the orb anchored where space permits and moves only enough to remain within the work area. Reduced motion disables rotation and expansion animation. These are procedural layers; the supplied reference PNGs are flattened and are not treated as separate light layers.
 
-#### Voice (Siri-style, without a wake word)
+When speech ends, capture closes, the dock expands, and **Understanding…** appears. Local Whisper produces a final transcript, which submits to the existing agent once. The dock then displays actual tool progress and the response; long answers use an attached, scrollable card above it. The keyboard control replaces the central content with a focused input; Enter submits once. The microphone starts a fresh circle-only session when the agent is ready, stopping playback first. Repeated summon during work shows that work without submitting or recording again.
 
-Hold Ctrl for 3 seconds, wait for "🎙 Listening…", and speak normally. When you stop talking, Mitraa transcribes what you said, acts on it, and answers out loud. There's no "Hey Mitraa": the microphone is only on after you summon it, and a blue meter under the text box shows when it's listening.
+Escape or dismiss stops capture/playback and hides the interface. It does not cancel an in-flight file action. Agent results and conversation state survive hiding. Approvals retain their real approval ID until explicit Allow or Deny; hiding does not resolve them. Summoning a pending approval restores its card with action, paths/arguments, risk and reasons, with Deny initially focused. No animation, audio callback or presentation change executes tools.
 
-| Piece | How it works |
-|---|---|
-| Speech-to-text | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), `small` multilingual model, **running locally**: audio never leaves the PC. It handles English, Hindi and Hinglish (auto-detected) |
-| Speed | About 0.1 s on an NVIDIA GPU (`pip install -r requirements-gpu.txt`), about 2–3 s on the CPU. It picks the GPU automatically when available |
-| End of speech | It learns the room's noise level, starts when you speak, and stops after about 1.1 s of silence (maximum 20 s) |
-| Text-to-speech | Windows voices through SAPI, including the newer OneCore voices. The default is **Heera (English, India)**. Paths, links and markdown are stripped, and long replies are cut short ("The rest is on screen.") |
-| Approvals | Risky actions are announced out loud, but still need a click on **Allow** |
+Drag the orb to move it. Qt settings persist `adaptive_position` and `reduced_motion` separately for preview and normal mode. Placement uses the active Windows monitor and Qt logical work-area coordinates, including negative coordinates and taskbar exclusion. Visible shapes have an input mask, so transparent unused areas do not intercept clicks. Escape uses a temporary keyboard hook only while the normal overlay is visible; it is removed on hide/quit. Ctrl shortcut handling remains unchanged.
 
-Controls: 🎤 listens again, 🔊/🔇 mutes the voice, typing cancels listening, and Esc stops both listening and speaking. Hindi replies come back in Roman script (Hinglish) so the voice can read them; install a Hindi voice in Windows if you want Devanagari.
+The tray contains Open (listen), New conversation, Mute speech output, Reduced motion, Pause hotkey and Quit. Change the trigger using `MITRAA_HOTKEY`; Ctrl+C and Ctrl+S never summon it. Only trigger/escape events are acted on; no keystrokes are stored. Administrator windows can prevent normal-process hooks from receiving keys.
 
-If the microphone doesn't work, allow desktop apps to use it in **Settings → Privacy & security → Microphone**.
-- **Privacy:** only the trigger keys are acted on. No keystrokes are stored or logged.
-- **Admin windows:** while an administrator window (such as Task Manager) has focus, Windows hides key events from normal programs, so the hotkey won't fire until you click elsewhere.
-- The assistant uses the same agent, sandbox, approvals and audit log as the CLI and API. Logs go to `backend/logs/assistant.log`.
+#### API-free preview
+
+Preview opens only the circle. Click to expand, or use tray **Preview: next / simulate speech end** to demonstrate endpoint expansion, understanding, thinking, tool progress, speaking appearance (without audio), response, error, approval, typing and a fresh circle. Choose Allow or Deny explicitly before leaving a preview approval. A separate preview tray typing action is also available. The window title, tooltip, tray and sample text label preview content. No provider client, model download, microphone, speech output or tools are constructed. Simulated states are not evidence of working audio. For a timed native entry-point check, run `python -m tests.preview_smoke` from `backend` (optionally set `QT_SCALE_FACTOR=1`, `1.5`, or `2`). This opens and closes preview automatically and saves rendered states under `backend/logs`.
+
+#### Local speech detection and configuration
+
+The single recorder uses [WebRTC VAD](https://github.com/daanzu/py-webrtcvad-wheels) with mono signed 16-bit PCM at 16 kHz and 30-ms frames. Native device-rate float audio is resampled with [SciPy polyphase filtering](https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.resample_poly.html), using preceding-frame filter context. Device callbacks only copy to a bounded 32-frame queue. Resampling, VAD, endpoint logic, transcription and Qt event signaling occur on a worker, outside the device callback. Queue/device overflows and VAD failures produce retry errors; there is no silent energy-only fallback.
+
+| Environment setting | Default | Meaning |
+|---|---:|---|
+| `MITRAA_VAD_MODE` | 2 | WebRTC aggressiveness, 0–3 |
+| `MITRAA_SPEECH_ONSET_MS` | 150 | Five positive VAD frames in a six-frame onset window |
+| `MITRAA_MIN_SPEECH_MS` | 270 | Normal voiced-audio target; shorter confirmed utterances require stronger transcription confidence |
+| `MITRAA_END_SILENCE` | 1.0 | Seconds of non-speech after confirmed speech; about 1.02 seconds at 30-ms resolution |
+| `MITRAA_NO_SPEECH_TIMEOUT` | 8 | Capture seconds before speech must begin |
+| `MITRAA_MAX_UTTERANCE` | 30 | Maximum capture seconds; accepted audio finalizes once with a visible limit notice |
+| `MITRAA_PREROLL_MS` | 300 | Retained audio preceding onset, plus the onset-confirmation window |
+| `MITRAA_TRAILING_MS` | 200 | Trailing audio kept after last VAD speech, rounded up to 210 ms |
+| `MITRAA_STT_MIN_LOGPROB` | -1.0 | Minimum accepted Whisper segment average log probability |
+| `MITRAA_STT_MAX_NO_SPEECH` | 0.6 | Maximum accepted Whisper no-speech probability |
+
+VAD is the speech classifier; RMS supplies a low numerical-silence guard and a slowly adapting noise floor, updated only on non-speech frames (2% before onset, 0.2% afterward). There is no initial silent-calibration assumption, so immediate speech is retained. The onset window rejects brief bursts; a one-second end-silence threshold tolerates ordinary pauses. Brief confirmed speech is allowed when Whisper average log probability is at least -0.65. Segments with compression ratio above 2.4 are also excluded. Empty or rejected recordings never call the agent. These tunings do not guarantee speech/noise discrimination in every room.
+
+Whisper runs locally (`MITRAA_STT_MODEL=small`, `MITRAA_STT_DEVICE=auto`, `MITRAA_STT_LANGUAGE=` for multilingual detection). Its first use may download the model; the loading orb remains responsive and capture stays off until readiness. No partial recognition is displayed in this version. Transcription and VAD are local, raw audio is not saved, and logs omit transcript/audio contents. Recognition timing depends on the hardware.
+
+Speech output uses Windows SAPI (`MITRAA_TTS_VOICE=Heera`, `MITRAA_TTS_RATE=1`), with playback-state start, completion, interruption and error signals. The microphone waits for playback to stop. Muting affects speech output, not explicitly requested microphone input. Microphone errors include retry guidance; allow desktop microphone access in Windows settings yourself if necessary.
+
+Qt owns the app/tray event loop. Agent/database sessions stay on one worker thread, with request-tagged results. Audio sessions have distinct IDs so cancelled capture, transcription and playback results cannot submit or modify a newer session. Streams close through context managers on every exit. Quit stops hooks, tray, capture and speech, releases the instance lock, and queues database cleanup on its owning thread. Already-running model/tool calls finish before that worker exits; neither tool execution nor Whisper inference is forcibly terminated.
+
+Verification uses deterministic synthetic endpoint/frame tests, fake device streams for exit paths, confidence metadata fixtures and Qt state/focus/geometry tests. Native Windows Qt renders can verify component layout, but do not prove real-room speech accuracy, desktop click-through, cross-app focus or mixed-monitor DPI behavior. Those require hands-on checks on the target setup.
 
 ### API
 

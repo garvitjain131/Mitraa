@@ -1,1 +1,1 @@
-"""Desktop assistant: hold a key to summon a Mitraa pop-up. Run with python -m mitraa.assistant"""
+"""Qt desktop orb: hold a key to summon Mitraa. Run with python -m mitraa.assistant."""

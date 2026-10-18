@@ -20,6 +20,8 @@ cd backend
 python -m venv .venv; .venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env    # add your Nebius key, base URL and Nemotron model id
+python -m mitraa.assistant --preview  # offline adaptive orb/dock preview
+python -m mitraa.assistant            # hold Ctrl alone for 3s to summon
 python -m mitraa.cli      # terminal chat
 python -m mitraa.main     # API on http://127.0.0.1:8000
 python -m pytest          # tests
