@@ -108,6 +108,14 @@ class AgentWorker:
     def new_conversation(self) -> None:
         self._pool.submit(setattr, self, "conversation_id", None)
 
+    def reload_configuration(self) -> None:
+        if not self._closing:
+            self._pool.submit(self._reload_configuration)
+
+    def _reload_configuration(self):
+        self._close()
+        self._agent = None
+
     def shutdown(self) -> None:
         if self._closing: return
         self._closing = True

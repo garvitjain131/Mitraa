@@ -199,7 +199,7 @@ class Orchestrator:
 
         ctx = self._ctx(state.conversation_id)
         assessment = evaluate(tool, args, ctx)
-        row = audit.start(self.session, state.conversation_id, tool.name, args.model_dump(), str(assessment.level), call.id)
+        row = audit.start(self.session, state.conversation_id, tool.name, args.model_dump(mode='json'), str(assessment.level), call.id)
 
         if assessment.error:
             result = ToolResult.fail(assessment.error)
@@ -276,7 +276,7 @@ class Orchestrator:
             pending_approval=ApprovalInfo(
                 approval_id=pending.id,
                 tool=tool.name,
-                args=args.model_dump(),
+                args=args.model_dump(mode='json'),
                 risk=str(level),
                 description=description,
                 reasons=reasons,

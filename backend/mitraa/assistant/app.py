@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-startup", action="store_true", help="start the assistant when Windows starts")
     parser.add_argument("--uninstall-startup", action="store_true", help="stop starting with Windows")
     parser.add_argument("--preview", action="store_true", help="offline orb preview; no microphone or agent")
+    parser.add_argument("--responsibilities", action="store_true", help="open the local responsibility desk on launch")
     args = parser.parse_args(argv)
 
     if hasattr(sys.stdout, "reconfigure") and sys.stdout is not None:
@@ -44,10 +45,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.uninstall_startup:
         print("Removed." if uninstall_startup() else "It was not installed.")
         return 0
-    return run(preview=args.preview)
+    if args.preview and args.responsibilities:
+        parser.error('--responsibilities cannot be combined with --preview')
+    return run(preview=args.preview, show_responsibilities=args.responsibilities)
 
 
-def run(preview: bool = False) -> int:
+def run(preview: bool = False, show_responsibilities: bool = False) -> int:
     started_at = time.perf_counter()
     settings = load_startup_settings()
     _setup_logging(settings.mitraa_log_level)
@@ -57,7 +60,7 @@ def run(preview: bool = False) -> int:
         return 1
     try:
         from mitraa.assistant.ui.controller import run_qt
-        return run_qt(preview, startup_settings=settings,
+        return run_qt(preview, startup_settings=settings, show_responsibilities=show_responsibilities,
                       on_ready=lambda: logger.info("Desktop ready in %.3fs", time.perf_counter()-started_at))
     finally:
         if lock is not None:

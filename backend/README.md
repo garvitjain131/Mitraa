@@ -33,6 +33,100 @@ copy .env.example .env            # macOS/Linux: cp .env.example .env
 
 ## Run
 
+### Responsibilities and local follow-up
+
+Open **My responsibilities** from the system tray. Select **New responsibility**, enter
+a title, desired outcome and next action, then save. Optional fields include notes,
+source references, priority, an explicit IANA timezone (such as `Asia/Kolkata`) and a
+deadline. References are stored as text; adding a path does not read that file.
+To open the desk immediately when starting the app, run `python -m mitraa.assistant --responsibilities`.
+
+Use the status selector to plan, activate, pause, wait for input, mark ready for review,
+cancel or complete a responsibility. Completion requires a note explaining how you
+confirmed the outcome. A prepared draft is not a submitted application. Completed or
+cancelled responsibilities close their pending reminders. Reopen as `captured` or
+`active` and add fresh reminders if needed. **Forget** permanently removes a responsibility,
+its reminders and activity after explicit confirmation.
+
+**Needs you** shows responsibilities waiting for user input or captured without a next
+action. **Ready for review** shows that state. **Coming up** shows open, unpaused work;
+**All** includes paused, completed and cancelled items. The editor preserves unsaved work
+during background refresh. If another interface changes an item, stale saves are rejected;
+use **Refresh**, review the discard prompt and reload before editing the newer version.
+
+Select a saved responsibility and choose **Add follow-up**. Reminder times are interpreted
+in the entered timezone and stored in UTC. Ambiguous and nonexistent daylight-saving times
+are rejected; choose an unambiguous time or UTC. The persistent inbox supports **Acknowledge**,
+**Snooze** and **Cancel reminder**. Acknowledgement closes a reminder without completing
+the responsibility. Paused work does not generate popups; overdue reminders catch up when
+it is resumed. Deadlines alone do not automatically create reminders.
+
+**Quiet hours** controls timezone, the quiet interval and desktop notifications. Defaults
+are 22:00–08:00 in the machine timezone when the desktop first initializes preferences.
+Equal start/end disables the quiet interval. Quiet hours suppress popups, not the inbox.
+The desktop checks every 15 seconds; no continuous microphone or screen capture is used.
+Notifications contain a generic count, keeping titles and personal messages out of popups.
+
+Reminders work while the desktop runs. If the PC sleeps, is off, or Mitraa is closed,
+the next poll catches up on missed times. Due items remain in the inbox until acknowledged,
+snoozed, cancelled or the responsibility is closed. Successful notification requests are
+recorded to avoid repeating popups on every poll/restart. OS popup presentation is best-effort;
+it is not proof the user saw it. A crash between notification request and persistence can
+repeat a popup, but does not lose the inbox item. If the tray cannot show messages, pending
+items remain available in the inbox.
+
+The local SQLite schema is upgraded additively on launch: existing conversations, memories,
+projects and file action history are preserved. All changes happen in transactions. Each
+responsibility has a version to prevent silently overwriting newer edits, and an activity
+history. These features work without an AI provider.
+
+### AI connection setup
+
+Choose **AI connection** from the tray or responsibility window. Enter the provider endpoint,
+model ID and API key. HTTPS endpoints are accepted; HTTP is limited to loopback hosts.
+A blank key preserves a saved key. Values are written atomically to this installation's
+gitignored `backend/.env`; unrelated settings are preserved. Environment variables take
+precedence and the dialog indicates when they are present. Credentials are never shown in
+status messages or passed to the responsibility worker's logs.
+
+Saving configuration does not make a paid verification request. The existing chat worker
+reloads its provider after its current request finishes, without restarting the application.
+Local responsibility tracking remains available without credentials. Chat uses the configured
+remote provider and can transmit selected task context; local tracking does not imply fully
+offline AI reasoning. The settings file still needs ordinary local filesystem protection.
+
+### Responsibility API and agent tools
+
+The optional localhost API exposes:
+
+| Route | Purpose |
+|---|---|
+| `GET/POST /responsibilities` | List/filter or capture responsibilities |
+| `GET/PATCH/DELETE /responsibilities/{id}` | Inspect, edit or explicitly forget |
+| `GET /responsibilities/{id}/history` | Activity and completion confirmation |
+| `GET/POST /reminders` | List or schedule local follow-ups |
+| `POST /reminders/{id}/snooze` | Reschedule to a future aware timestamp |
+| `POST /reminders/{id}/acknowledge` | Close without completing the responsibility |
+| `DELETE /reminders/{id}` | Cancel a reminder |
+| `GET /follow-up` | Persistent due inbox and notification candidates |
+| `GET/PUT /reminder-preferences` | Timezone, quiet hours and notification settings |
+
+PATCH requires `expected_version`. DELETE requires `confirmed=true` and the current
+`expected_version`. Dates require explicit offsets (e.g. `2026-10-22T18:00:00+05:30`).
+GET `/follow-up` never consumes desktop notifications. Only the running desktop requests
+popups; starting the API alone does not deliver notifications.
+
+The configured agent also has `create_responsibility`, `list_responsibilities`,
+`update_responsibility`, `add_reminder`, `change_reminder`, and `get_follow_up` tools.
+Natural-language requests require a configured provider; direct desktop capture does not.
+
+Verification:
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'
+python -m pytest -p no:cacheprovider --basetemp logs/verification-tests
+```
+
 ### Expandable conversation card
 
 Use the diagonal-arrow icon at the upper card's top-right to expand the current

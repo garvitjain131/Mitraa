@@ -121,7 +121,10 @@ class Transcriber:
                     if device == 'cuda':
                         # Validate actual CUDA kernels without language detection or
                         # decoding fabricated silence. CPU constructors need no warm-up.
-                        model.encode(np.zeros((model.feature_extractor.feature_size,3000),dtype=np.float32))
+                        # FeatureExtractor does not retain its feature_size argument.
+                        # The actual filter bank also handles 128-bin Whisper models.
+                        bins = model.feature_extractor.mel_filters.shape[0]
+                        model.encode(np.zeros((bins,3000),dtype=np.float32))
                     self._model = model
                     self.description = f"Whisper {self.model_name} on {device.upper()}"
                     logger.info("Speech model ready: %s", self.description)

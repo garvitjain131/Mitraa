@@ -1,6 +1,7 @@
 # secrets
 .env
 !.env.example
+.mitraa-provider-*.tmp
 
 # python
 __pycache__/

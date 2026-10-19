@@ -30,11 +30,13 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    from mitraa.tools import files, memory_tools, project_tools
+    from mitraa.tools import files, memory_tools, project_tools, responsibility_tools
 
     registry = ToolRegistry()
     for tool in files.ALL_FILE_TOOLS:
         registry.register(tool)
     for tool in memory_tools.ALL_MEMORY_TOOLS + project_tools.ALL_PROJECT_TOOLS:
+        registry.register(tool)
+    for tool in responsibility_tools.ALL_RESPONSIBILITY_TOOLS:
         registry.register(tool)
     return registry

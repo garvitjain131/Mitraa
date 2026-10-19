@@ -27,6 +27,8 @@ from mitraa.tools.registry import ToolRegistry, build_default_registry
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(title="Mitraa", version=__version__)
+from mitraa.responsibilities.api import router as responsibilities_router
+app.include_router(responsibilities_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],

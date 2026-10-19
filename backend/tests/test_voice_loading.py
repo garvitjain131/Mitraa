@@ -11,7 +11,7 @@ def fake_runtime(monkeypatch,tmp_path,cuda_count=0,break_cuda=False):
     for name in ('model.bin','config.json','tokenizer.json'): (folder/name).write_text('fixture')
     calls=[]
     class Model:
-        feature_extractor=SimpleNamespace(feature_size=80)
+        feature_extractor=SimpleNamespace(mel_filters=SimpleNamespace(shape=(128,201)))
         def __init__(self,path,**kwargs):
             calls.append(('model',path,kwargs))
             self.device=kwargs['device']
@@ -63,3 +63,11 @@ def test_load_async_is_idempotent(monkeypatch):
     assert t._load_thread is first
     release.set(); first.join(2); t.load_async()
     assert calls==[True]
+
+
+def test_gpu_warmup_uses_actual_filter_bank_dimensions(monkeypatch,tmp_path):
+    calls=fake_runtime(monkeypatch,tmp_path,cuda_count=1)
+    t=Transcriber('large-v3','auto',''); t._load()
+    assert t.error is None and t.description.endswith('CUDA')
+    assert ('encode',(128,3000)) in calls
+    assert [c[2]['device'] for c in calls if c[0]=='model']==['cuda']

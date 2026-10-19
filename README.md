@@ -15,6 +15,11 @@ Mitraa is a local-first personal AI agent built on NVIDIA Nemotron (served by Ne
 
 ## Quick start
 
+The desktop tray now includes **My responsibilities** for local capture, next actions,
+deadlines, completion confirmation, and follow-up reminders. **AI connection** configures
+chat without editing files by hand. Local tracking and reminders do not need an API key.
+Reminders require Mitraa running and catch up after a missed time or restart.
+
 ```powershell
 cd backend
 python -m venv .venv; .venv\Scripts\activate

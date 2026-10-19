@@ -444,7 +444,7 @@ class Controller(QObject):
         self.overlay.close()
 
 
-def run_qt(preview=False, startup_settings=None, on_ready=None):
+def run_qt(preview=False, startup_settings=None, on_ready=None, show_responsibilities=False):
     # Overlap native hook imports with Qt/font initialization on cold launch.
     hotkey_errors=[]
     hotkey_import=None
@@ -468,6 +468,17 @@ def run_qt(preview=False, startup_settings=None, on_ready=None):
         item=QAction(label,menu); item.setCheckable(checkable); item.setChecked(checked); item.triggered.connect(callback); menu.addAction(item); return item
     action('Open (listen)' if not preview else 'Preview: circle-only listening',controller.summon)
     action('New conversation',controller.new_chat)
+    local_services=[]
+    def local_service():
+        if not local_services:
+            from mitraa.assistant.ui.responsibilities import DeskRuntime
+            runtime=DeskRuntime(tray,controller); local_services.append(runtime)
+            app.aboutToQuit.connect(runtime.shutdown)
+        return local_services[0]
+    if not preview:
+        action('My responsibilities',lambda:local_service().open())
+        action('AI connection',lambda:local_service().open_provider())
+        QTimer.singleShot(0,lambda:local_service().open() if show_responsibilities else local_service())
     def mute(checked):
         controller.muted=checked; overlay.orb.muted=checked
         if controller.speaker:

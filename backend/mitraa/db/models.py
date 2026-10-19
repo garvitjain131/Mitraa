@@ -148,3 +148,53 @@ class ProjectMember(Base):
     name: Mapped[str] = mapped_column(String(100))
     hours_per_day: Mapped[float] = mapped_column(Float, default=6)
     unavailable_dates_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class Responsibility(Base):
+    __tablename__ = "responsibilities"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(200))
+    outcome: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    sources_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="captured", index=True)
+    priority: Mapped[str] = mapped_column(String(16), default="medium")
+    deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(100), default="UTC")
+    completion_note: Mapped[str] = mapped_column(Text, default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResponsibilityEvent(Base):
+    __tablename__ = "responsibility_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    responsibility_id: Mapped[str] = mapped_column(ForeignKey("responsibilities.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    responsibility_id: Mapped[str] = mapped_column(ForeignKey("responsibilities.id"), index=True)
+    message: Mapped[str] = mapped_column(String(500))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="scheduled", index=True)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReminderPreferences(Base):
+    __tablename__ = "reminder_preferences"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    timezone: Mapped[str] = mapped_column(String(100), default="UTC")
+    quiet_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    quiet_start: Mapped[str] = mapped_column(String(5), default="22:00")
+    quiet_end: Mapped[str] = mapped_column(String(5), default="08:00")
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

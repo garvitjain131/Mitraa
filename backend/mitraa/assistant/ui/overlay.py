@@ -3,7 +3,7 @@ import math
 from html import escape
 from enum import Enum
 from PySide6.QtCore import Qt, QPoint, QRectF, QTimer, Signal, Property, QPropertyAnimation, QEasingCurve, QSettings, QVariantAnimation
-from PySide6.QtGui import QPainter, QPen, QColor, QLinearGradient, QPainterPath, QRegion, QCursor
+from PySide6.QtGui import QPainter, QPen, QColor, QLinearGradient, QPainterPath, QPainterPathStroker, QRegion, QCursor
 from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QLineEdit, QTextBrowser,QLayout,
                              QVBoxLayout, QHBoxLayout, QGraphicsOpacityEffect, QApplication)
 from mitraa.assistant.ui.orb import Orb
@@ -275,14 +275,24 @@ class Overlay(QWidget):
         self.orb.raise_()
         self.update_mask(); self.update()
 
+    def dock_path(self):
+        rect = QRectF(36.5, self.base_y+5.5, self.width()-41, self.row_height-11)
+        path = QPainterPath()
+        radius = rect.height()/2
+        path.addRoundedRect(rect, radius, radius)
+        return path
+
     def update_mask(self):
         region = QRegion(self.orb.geometry(), QRegion.Ellipse)
         if self.listening_ripples:
             center=self.orb.geometry().center()
             region |= QRegion(center.x()-43,center.y()-43,87,87,QRegion.Ellipse)
         if self._progress > 0:
-            path = QPainterPath(); path.addRoundedRect(QRectF(36,self.base_y+5,self.width()-40,self.row_height-10),36,36)
-            region |= QRegion(path.toFillPolygon().toPolygon())
+            path = self.dock_path()
+            # The native window mask is binary. Leave room for the painter's
+            # antialiased edge instead of cutting it into a jagged outline.
+            stroker = QPainterPathStroker(); stroker.setWidth(3)
+            region |= QRegion(path.united(stroker.createStroke(path)).toFillPolygon().toPolygon())
         if self.card.isVisible():
             path = QPainterPath(); path.addRoundedRect(QRectF(self.card.geometry()),14,14)
             region |= QRegion(path.toFillPolygon().toPolygon())
@@ -331,27 +341,18 @@ class Overlay(QWidget):
         self.paint_listening_ripples(p)
         if self._progress <= 0: return
         p.setOpacity(self._progress)
-        rect = QRectF(36,self.base_y+5,self.width()-40,self.row_height-10)
+        path = self.dock_path()
+        rect = path.boundingRect()
         fill = QLinearGradient(0,rect.top(),0,rect.bottom())
         fill.setColorAt(0,QColor(20,43,49,245)); fill.setColorAt(.45,QColor(7,18,25,246)); fill.setColorAt(1,QColor(13,34,39,245))
-        p.setBrush(fill); p.setPen(Qt.NoPen); p.drawRoundedRect(rect,36,36)
-        # The reference has a teal upper rim, a teal lower center, and amber
-        # returns at both lower corners. Layered strokes give an inward glow
-        # while keeping transparent space outside the dock click-through.
-        for lower, stops in [
-            (False, [(0,'#8adfe2'),(.18,'#05dce8'),(.65,'#00d9e7'),(.86,'#c3d1bd'),(1,'#ffcd87')]),
-            (True, [(0,'#ffc66e'),(.18,'#f4bb60'),(.38,'#00dce5'),(.7,'#00e0e8'),(1,'#ffbb62')]),
-        ]:
-            p.save()
-            half = rect.height()/2
-            p.setClipRect(QRectF(rect.left()-4,rect.top()+half if lower else rect.top()-4,rect.width()+8,half+4))
-            p.setBrush(Qt.NoBrush)
-            for width, alpha in [(7,22),(3.5,60),(1.1,235)]:
-                edge=QLinearGradient(rect.left(),0,rect.right(),0)
-                for position, hex_color in stops:
-                    color=QColor(hex_color); color.setAlpha(alpha); edge.setColorAt(position,color)
-                p.setPen(QPen(edge,width)); p.drawRoundedRect(rect,36,36)
-            p.restore()
+        p.setBrush(fill); p.setPen(Qt.NoPen); p.drawPath(path)
+        # One continuous fine rim: no overlapping glow strokes or seams where
+        # separately clipped upper and lower borders meet at the rounded ends.
+        edge = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        for position, hex_color in [(0,'#49bcc5'),(.42,'#25858e'),(.75,'#658e89'),(1,'#d3a45f')]:
+            color = QColor(hex_color); color.setAlpha(205)
+            edge.setColorAt(position, color)
+        p.setBrush(Qt.NoBrush); p.setPen(QPen(edge, 1.0)); p.drawPath(path)
 
     def present(self, presentation, animate=True):
         presentation = Presentation(presentation)

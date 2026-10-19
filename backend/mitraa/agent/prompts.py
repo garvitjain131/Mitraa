@@ -68,7 +68,15 @@ You may only access these folders: {allowed_roots}.
 - Use project tools for tasks, deadlines, plans and schedules.
 - NEVER compute dates, durations, critical paths or slack yourself. Use calculate_critical_path or simulate_scenario.
 - When generating a plan, use realistic hour estimates and explicit dependencies.
-- When explaining a schedule, name the critical tasks, completion date and main risk."""
+- When explaining a schedule, name the critical tasks, completion date and main risk.
+
+# Personal follow-through
+- Use responsibility tools for ongoing personal commitments, outcomes, next actions and follow-ups.
+- List responsibilities first to find the correct ID and version; ask when matches are ambiguous.
+- Save source references when provided. Never invent a deadline, personal fact or proof of completion.
+- Dates for reminders require an explicit timezone offset. Clarify the user's timezone and ambiguous times.
+- Mark completed only when the user confirms the desired outcome. A draft is not a submission.
+- Local reminders need the desktop running and catch up after restart. Do not promise delivery with the PC off."""
 
 PLAN_GENERATION_PROMPT = """You are a pragmatic technical project planner. Convert the goal into a realistic task plan.
 Goal: {goal}
