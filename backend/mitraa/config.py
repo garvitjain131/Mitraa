@@ -49,14 +49,18 @@ class Settings(BaseSettings):
     mitraa_stt_model: str = "small"  # Whisper size: tiny | base | small | medium (multilingual)
     mitraa_stt_device: str = "auto"  # auto (GPU if CUDA works, else CPU) | cuda | cpu
     mitraa_stt_language: str = ""  # empty = auto-detect (English, Hindi, Hinglish, ...)
-    mitraa_tts_voice: str = "Heera"  # part of a Windows voice name, e.g. Heera, Ravi, Zira
-    mitraa_tts_rate: int = 1  # -10 (slow) .. 10 (fast)
+    mitraa_tts_voice: str = "David"  # calm male Windows voice; override with an installed name
+    mitraa_tts_rate: int = -1  # -10 (slow) .. 10 (fast)
+    mitraa_tts_backend: str = 'auto'  # auto: local Kokoro if installed, otherwise Windows
+    mitraa_tts_model_dir: str = str(BACKEND_DIR / 'models' / 'kokoro')
+    mitraa_neural_voice: str = 'bm_george'
+    mitraa_neural_speed: float = Field(default=.96,ge=.5,le=2)
 
     # Local utterance detection (WebRTC VAD, 16 kHz / 30 ms frames).
     mitraa_vad_mode: int = Field(default=2, ge=0, le=3)
     mitraa_speech_onset_ms: int = Field(default=150, ge=90, le=300)
     mitraa_min_speech_ms: int = Field(default=270, ge=150, le=600)
-    mitraa_end_silence: float = Field(default=1.0, ge=.3, le=3)
+    mitraa_end_silence: float = Field(default=.6, ge=.3, le=3)
     mitraa_no_speech_timeout: float = Field(default=8, ge=2, le=30)
     mitraa_max_utterance: float = Field(default=30, ge=3, le=120)
     mitraa_preroll_ms: int = Field(default=300, ge=250, le=500)

@@ -19,7 +19,7 @@ class Endpointer:
     frame_seconds: float = FRAME_SECONDS
     onset_seconds: float = .15
     min_speech_seconds: float = .27
-    end_silence: float = 1.0
+    end_silence: float = .6
     start_timeout: float = 8.0
     max_seconds: float = 30.0
     preroll_seconds: float = .3

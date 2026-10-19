@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
 FRAME_SECONDS = 0.03
-# Biases Whisper toward Roman-script Hinglish and file-style words instead of Devanagari/Urdu script.
-INITIAL_PROMPT = "Hey Mitraa. Mera resume.pdf Downloads mein move karo. Move notes.txt from Documents to Desktop."
+# Vocabulary context, not example sentences that can leak into short recordings.
+# Hindi stays in its natural script; English names and paths retain their spelling.
+INITIAL_PROMPT = "Hindi and English conversation, including mixed Hindi-English. हिंदी और अंग्रेज़ी। Mitraa, मित्रा।"
 
 Post = Callable[[tuple[str, Any]], None]
 
@@ -62,7 +63,7 @@ class Transcriber:
     def __init__(self, model: str, device: str, language: str) -> None:
         self.model_name = model
         self.device = device
-        self.language = language or None
+        self.language = None if not language or language.strip().lower() == 'auto' else language.strip().lower()
         self.ready = threading.Event()
         self.error: str | None = None
         self.description = ""
@@ -144,11 +145,26 @@ class Transcriber:
         if self._model is None:
             raise RuntimeError(self.error or "Speech model unavailable.")
         with self._lock:
+            language=self.language
+            if language is None:
+                # Hindi is often confused with Urdu on short utterances. Rank
+                # only the two supported languages, then pin decoding so later
+                # segments cannot switch to an unintended script.
+                _, _, probabilities=self._model.detect_language(audio=audio,vad_filter=False)
+                supported=[(code,score) for code,score in probabilities if code in ('hi','en')]
+                if not supported:
+                    raise RuntimeError('Hindi/English language detection failed. Please try again.')
+                language=max(supported,key=lambda item:item[1])[0]
             segments, info = self._model.transcribe(
                 audio,
-                language=self.language,
+                language=language,
+                task='transcribe',
+                multilingual=False,
                 beam_size=5,
-                vad_filter=True,
+                temperature=0.0,
+                # The recorder already performs VAD and retains pre-roll/tail.
+                # A second VAD can remove quiet syllables and intra-sentence words.
+                vad_filter=False,
                 initial_prompt=INITIAL_PROMPT,
                 condition_on_previous_text=False,
             )
@@ -241,7 +257,10 @@ class VoiceInput:
                 max_no_speech=self.settings.mitraa_stt_max_no_speech)
             if not cancel.is_set():
                 if text:
-                    self.post(('voice_text', text))
+                    from mitraa.assistant.transcript_display import romanize_hindi
+                    display=romanize_hindi(text)
+                    if not cancel.is_set():
+                        self.post(('voice_text', {'text':text,'display':display}))
                 else:
                     self.post(('voice_none', "I couldn’t make that out. Tap the microphone to try again."))
         except Exception as exc:
@@ -447,5 +466,14 @@ def build_voice(settings: Settings) -> Voice:
     if settings.mitraa_voice_input:
         transcriber = Transcriber(settings.mitraa_stt_model, settings.mitraa_stt_device, settings.mitraa_stt_language)
         transcriber.load_async()
-    speaker = Speaker(settings.mitraa_tts_voice, settings.mitraa_tts_rate) if settings.mitraa_voice_output else None
+    speaker = None
+    if settings.mitraa_voice_output:
+        folder=Path(settings.mitraa_tts_model_dir)
+        neural=settings.mitraa_tts_backend=='kokoro' or (
+            settings.mitraa_tts_backend=='auto' and all((folder/name).is_file() for name in ('kokoro-v1.0.onnx','voices-v1.0.bin')))
+        if neural:
+            from mitraa.assistant.neural_speaker import NeuralSpeaker
+            speaker=NeuralSpeaker(folder,settings.mitraa_neural_voice,settings.mitraa_neural_speed)
+        else:
+            speaker=Speaker(settings.mitraa_tts_voice, settings.mitraa_tts_rate)
     return Voice(transcriber, speaker)

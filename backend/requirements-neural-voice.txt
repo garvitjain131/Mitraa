@@ -1,0 +1,2 @@
+# Optional local neural speech. Model files are installed separately on D:.
+kokoro-onnx==0.6.1

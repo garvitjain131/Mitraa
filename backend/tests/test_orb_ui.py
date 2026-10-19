@@ -32,6 +32,21 @@ def test_orb_only_has_no_dock_text_or_input(ui):
     assert not o.mask().contains(QPoint(0,0))
 
 
+def test_listening_ripples_keep_orb_and_dock_geometry(ui):
+    app,o,c,w=ui
+    geometry=o.orb.geometry()
+    c.set_state(State.WAITING_FOR_SPEECH); o.animate_listening()
+    assert o.listening_ripples and o.width()==88
+    assert o.orb.geometry()==geometry and not o.content.isVisible()
+    assert not o.mask().contains(QPoint(0,0))
+    c.set_state(State.RECORDING_SPEECH); o.orb.level=.08; o.orb.tick()
+    assert 0 < o.orb.listening_level < 1
+    o.orb.level=0; o.orb.tick()
+    assert 0 < o.orb.listening_level < .35
+    c.set_state(State.TRANSCRIBING); o.animate_listening()
+    assert not o.listening_ripples and o.orb.geometry()==geometry
+
+
 def test_orb_click_expands_without_touching_audio_or_phase(ui):
     app,o,c,w=ui
     c.session_open=True; c.set_state(State.RECORDING_SPEECH)
@@ -85,6 +100,42 @@ def test_hidden_inflight_result_preserved(ui):
     assert c.busy and c.state==State.THINKING and o.presentation==Presentation.HIDDEN
     c.handle('response',NS(type='message',pending_approval=None,text='Actual response'),c.request_id)
     assert not c.busy and c.result_text=='Actual response' and not o.isVisible()
+
+
+def test_provider_error_keeps_recognized_words_below_status(ui):
+    app,o,c,w=ui
+    c.session_open=True
+    c.handle('voice_text','मेरी file खोलो please',c.epoch)
+    c.handle('error',{'message':'Connect your AI provider to chat.',
+                     'provider_setup':True,'details':''},c.request_id)
+    app.processEvents()
+    assert o.status.toolTip()=='Needs attention'
+    assert o.preview_text.toolTip()=='मेरी file खोलो please'
+    assert o.preview_text.isVisible()
+    assert o.title.text()=='Connect your AI provider'
+    assert c.transcript=='मेरी file खोलो please'
+
+def test_romanized_voice_display_preserves_original_agent_input(ui):
+    app,o,c,w=ui
+    c.session_open=True
+    c.handle('voice_text',{'text':'तुम्हारा नाम क्या है?','display':'tumhaaraa naam kyaa hai?'},c.epoch)
+    assert w.sent==[('तुम्हारा नाम क्या है?',1)]
+    assert c.transcript=='tumhaaraa naam kyaa hai?'
+
+
+def test_error_without_transcript_still_shows_useful_message(ui):
+    app,o,c,w=ui
+    c.show_error('Voice unavailable','Please retry.')
+    assert o.preview_text.toolTip()=='Voice unavailable'
+
+def test_short_response_shows_card_and_escapes_markup(ui):
+    app,o,c,w=ui
+    c.submit('hello')
+    c.handle('response',NS(type='message',pending_approval=None,text='Hello! <test>'),c.request_id)
+    app.processEvents()
+    assert o.card.isVisible() and o.title.text()=='Mitraa'
+    assert o.body.toPlainText()=='Hello! <test>'
+    assert c.result_card==('Mitraa','Hello! <test>',False,False)
 
 
 def test_endpoint_expands_and_limit_is_clear(ui):

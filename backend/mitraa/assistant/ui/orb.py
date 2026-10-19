@@ -15,6 +15,7 @@ class Orb(QWidget):
         self.setFixedSize(72, 72)
         self.state = 'idle'
         self.level = 0.0
+        self.listening_level = 0.0
         self.reduced = False
         self.muted = False
         self.anchor = None
@@ -30,6 +31,9 @@ class Orb(QWidget):
         return 0.0 if self.reduced else self.clock.elapsed() / 1000
 
     def tick(self):
+        target = min(1., (max(0., self.level) / .08) ** .5) if self.state == 'recording_speech' else 0.
+        # Fast attack and soft release prevent noisy frame-to-frame flicker.
+        self.listening_level += (target-self.listening_level) * (.35 if target > self.listening_level else .12)
         if self.isVisible() and not self.reduced:
             self.update()
 
@@ -68,8 +72,9 @@ class Orb(QWidget):
         t = self.phase
         audio = min(1, (max(0, self.level) / .08) ** .5)
         recording = self.state == 'recording_speech'
+        audio_active = self.state in ('recording_speech','speaking')
         pulse = .5 + .5 * math.sin(t * (7 if self.state == 'speaking' else 1.7))
-        intensity = .3 + (.7 * audio if recording else .15 * pulse)
+        intensity = .3 + (.7 * audio if audio_active else .15 * pulse)
         teal = QColor('#64a6a5' if self.muted else '#00e5ef')
         amber = QColor('#ffbd62')
         halo = QRadialGradient(0, 0, 36)

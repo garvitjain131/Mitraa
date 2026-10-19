@@ -42,6 +42,9 @@ class Controller(QObject):
         self.inputs=[]; self.session_open=False; self.submitted_sessions=set()
         self.transcript=''; self.result_text=''; self.result_card=None; self.progress=''
         self.recording_limited=False; self.preview_index=0; self.muted=False
+        self.history_records=[]; self.conversation_id=None; self.history_generation=0
+        self.history_loading=False; self.history_more=False; self.history_error=''
+        self.history_paged=False
         self.voice_builder=None; self.voice_settings=None; self.voice_initializing=False
         self.closed=False; self.escape_hook=None; self.use_escape_hook=False
         self.orb_restart=QTimer(self); self.orb_restart.setSingleShot(True)
@@ -60,6 +63,10 @@ class Controller(QObject):
         overlay.orb_double_clicked.connect(self.on_orb_double_click)
         overlay.preview_next.connect(self.next_preview)
         overlay.visibility_changed.connect(self.sync_escape_hook)
+        overlay.conversation_opened.connect(self.open_history)
+        overlay.conversation_submitted.connect(self.submit_history)
+        overlay.conversation_typing.connect(self.history_typing)
+        overlay.older_requested.connect(self.load_older)
 
     def set_state(self,state):
         self.state=State(state); self.overlay.orb.state=self.state.value
@@ -69,10 +76,68 @@ class Controller(QObject):
         status=LABELS[self.state.value]
         if self.recording_limited and self.state in (State.TRANSCRIBING,State.THINKING): status+=' · recording limit'
         content=self.progress if self.state==State.WORKING else (self.result_text or self.transcript)
+        if self.state==State.ERROR and self.transcript:
+            content=self.transcript
         self.overlay.set_status(status,content,waveform=self.state in (State.WAITING_FOR_SPEECH,State.RECORDING_SPEECH))
         self.overlay.buttons[0].setEnabled(not self.busy and self.pending is None)
         self.overlay.buttons[1].setEnabled(not self.busy and self.pending is None)
         self.overlay.orb.update()
+        self.render_history_status()
+
+    def render_history_status(self):
+        panel=self.overlay._conversation
+        if panel is not None:
+            panel.set_available(not self.busy and self.pending is None,self.busy,
+                                self.history_error or ('Loading conversation…' if self.history_loading and not self.busy else ''))
+            self.history_paged=self.history_paged or self.history_more
+            panel.older.setVisible(self.history_paged or bool(self.history_error))
+            panel.older.setText('Load earlier messages' if self.history_more else ('Retry loading conversation' if self.history_error else 'Beginning of conversation'))
+            panel.older.setEnabled(not self.history_loading and (self.history_more or bool(self.history_error)))
+
+    def merge_message(self,row):
+        if row.get('role') not in ('user','assistant'): return
+        for index,existing in enumerate(self.history_records):
+            same_id=row.get('id') is not None and existing.get('id')==row['id']
+            same_request=row.get('request_id') is not None and row.get('request_id')==existing.get('request_id') and row['role']==existing['role']
+            if same_id or same_request:
+                merged={**existing,**row}
+                if merged.get('request_id') is None: merged['request_id']=existing.get('request_id')
+                if row.get('id') is None and existing.get('id') is not None:
+                    merged['id']=existing['id']; merged['created_at']=existing['created_at']
+                self.history_records[index]=merged; return
+        self.history_records.append(row)
+
+    def live_message(self,role,text):
+        from datetime import datetime,timezone
+        self.merge_message(dict(id=None,role=role,content=text,created_at=datetime.now(timezone.utc).isoformat(),request_id=self.request_id))
+        self.render_history()
+
+    def render_history(self,prepend=False,initial=False):
+        self.history_records.sort(key=lambda row:(row.get('id') is None,row.get('id') or 0))
+        if self.overlay._conversation is not None:
+            self.overlay.conversation.render(self.history_records,prepend=prepend,initial=initial)
+            self.render_history_status()
+
+    def open_history(self):
+        self.render_history(initial=True)
+        self.fetch_history()
+
+    def fetch_history(self,before=None):
+        if self.preview or self.history_loading: return
+        if not hasattr(self.worker,'history'): return
+        self.history_loading=True; self.history_error=''; self.render_history_status()
+        self.worker.history(self.history_generation,before)
+
+    def load_older(self):
+        ids=[r['id'] for r in self.history_records if r.get('id') is not None]
+        self.fetch_history(min(ids) if ids and not self.history_error else None)
+
+    def history_typing(self):
+        if self.session_open:
+            self.invalidate_audio(); self.set_state(State.IDLE)
+
+    def submit_history(self,text):
+        if self.submit(text): self.overlay.conversation.composer.clear()
 
     def sync_escape_hook(self,visible):
         if not self.use_escape_hook: return
@@ -198,20 +263,25 @@ class Controller(QObject):
         self.set_state(State.LOADING_VOICE)
         if self.ensure_voice(): self.start_voice_input()
 
-    def submit(self,text,voice=False):
+    def submit(self,text,voice=False,display_text=None):
         text=text.strip()
-        if not text or self.busy or self.pending: return
+        if self.closed or not text or self.busy or self.pending: return False
         if voice:
-            if not self.session_open or self.epoch in self.submitted_sessions: return
+            if not self.session_open or self.epoch in self.submitted_sessions: return False
             self.submitted_sessions.add(self.epoch)
         self.invalidate_audio()
         self.overlay.typing=False; self.overlay.hide_entry(); self.overlay.clear_card()
-        self.transcript=text; self.result_text=''; self.overlay.clear_entry(); self.result_card=None
+        self.transcript=display_text if display_text is not None else text
+        self.result_text=''; self.overlay.clear_entry(); self.result_card=None
         self.expand(); self.set_state(State.THINKING)
+        self.busy=True; self.request_id+=1; self.history_error=''; self.live_message('user',text); self.render_status()
         if self.preview:
-            self.result_text='[Preview] No request was sent.'; self.set_state(State.IDLE); return
-        self.busy=True; self.request_id+=1; self.render_status()
+            request=self.request_id
+            from types import SimpleNamespace
+            QTimer.singleShot(350,lambda:self.handle('response',SimpleNamespace(type='message',pending_approval=None,text='[Preview] Simulated reply. No model or tools were called.'),request))
+            return True
         self.worker.send(text,self.request_id)
+        return True
 
     def decide(self,approved):
         if self.pending is None or self.busy: return
@@ -246,6 +316,25 @@ class Controller(QObject):
     @Slot(str,object,int)
     def handle(self,kind,payload,token=-1):
         if self.closed: return
+        if kind in ('history','history_error'):
+            if token!=self.history_generation: return
+            self.history_loading=False
+            if kind=='history_error': self.history_error=payload; self.render_history_status(); return
+            if self.conversation_id is not None and payload['conversation_id']!=self.conversation_id: return
+            self.conversation_id=payload['conversation_id']
+            prior_ids=[r['id'] for r in self.history_records if r.get('id') is not None]
+            for row in payload['messages']: self.merge_message(row)
+            # Initial/latest fetch must not erase an already-loaded older boundary.
+            if payload['before'] is not None or not prior_ids or (payload['messages'] and payload['messages'][0]['id']<=min(prior_ids)):
+                self.history_more=payload['has_more']
+            self.render_history(prepend=payload['before'] is not None)
+            return
+        if kind=='message_saved':
+            if token!=self.request_id: return
+            if self.conversation_id is not None and self.conversation_id!=payload['conversation_id']:
+                self.history_records=[r for r in self.history_records if r.get('request_id')==token]
+                self.history_generation+=1; self.history_loading=False; self.history_more=False
+            self.conversation_id=payload['conversation_id']; self.merge_message(payload['message']); self.render_history(); return
         if kind=='voice_initialized':
             self.voice_initializing=False
             self.voice,self.voice_settings=payload; self.speaker=self.voice.speaker
@@ -267,17 +356,25 @@ class Controller(QObject):
             self.overlay.orb.level=payload; self.overlay.waveform.feed(payload)
         elif kind=='voice_endpoint':
             self.recording_limited=payload=='max'; self.expand(); self.set_state(State.TRANSCRIBING)
-        elif kind=='voice_text': self.submit(payload,voice=True)
+        elif kind=='voice_text':
+            if isinstance(payload,dict):
+                self.submit(payload['text'],voice=True,display_text=payload['display'])
+            else:
+                self.submit(payload,voice=True)
         elif kind=='voice_none': self.show_error('I didn’t catch anything',str(payload))
         elif kind=='voice_error': self.show_error('Voice unavailable',str(payload))
         elif kind=='speech_error': self.show_error('Speech playback unavailable',str(payload),details=True)
         elif kind=='speech_started':
             if not self.session_open: self.set_state(State.SPEAKING)
+        elif kind=='speech_level':
+            if not self.session_open and self.state==State.SPEAKING:
+                self.overlay.orb.level=payload; self.overlay.waveform.feed(payload)
         elif kind in ('speech_finished','speech_stopped'):
             if not self.session_open: self.set_state(State.AWAITING_APPROVAL if self.pending else State.IDLE)
         elif kind=='step':
             self.progress=f'{payload.tool}: {payload.summary}'; self.set_state(State.WORKING)
         elif kind=='response':
+            if not self.busy: return
             self.busy=False
             info=payload.pending_approval
             if payload.type=='approval_required' and info:
@@ -285,22 +382,28 @@ class Controller(QObject):
                 self.set_state(State.AWAITING_APPROVAL)
                 if self.overlay.isVisible(): self.show_approval()
             else:
+                self.live_message('assistant',payload.text)
                 self.result_text=payload.text; self.result_card=None; self.set_state(State.IDLE)
-                if len(payload.text)>100 or '\n' in payload.text:
-                    self.result_card=('Mitraa',payload.text,False,False)
-                    if self.overlay.isVisible(): self.overlay.show_card('Mitraa',payload.text)
+                self.result_card=('Mitraa',payload.text,False,False)
+                if self.overlay.isVisible(): self.overlay.show_card('Mitraa',payload.text)
                 self.say(payload.text)
         elif kind=='error':
+            if not self.busy: return
             self.busy=False
             info=payload if isinstance(payload,dict) else {'message':str(payload),'details':''}
             title='Connect your AI provider' if info.get('provider_setup') else 'Request failed'
             text=('Add NEBIUS_API_KEY, NEBIUS_BASE_URL and NEMOTRON_MODEL to backend/.env, then restart.\n\n'+info.get('details','')) if info.get('provider_setup') else info.get('message','Please try again.')+'\n\n'+info.get('details','')
             self.result_text=title; self.result_card=(title,text,False,True); self.set_state(State.ERROR)
+            self.history_error=info.get('message',title); self.render_history_status()
             if self.overlay.isVisible(): self.overlay.show_card(title,text,details=True)
 
     def new_chat(self):
         if self.busy or self.pending: return
         self.invalidate_audio()
+        self.history_generation+=1; self.request_id+=1; self.conversation_id=None
+        self.history_records=[]; self.history_more=False; self.history_loading=False; self.history_error=''; self.history_paged=False
+        if self.overlay._conversation is not None: self.overlay.conversation.composer.clear()
+        self.render_history(initial=True)
         if self.worker: self.worker.new_conversation()
         self.transcript=''; self.result_text=''; self.result_card=None
         self.overlay.clear_card(); self.set_state(State.IDLE)
@@ -319,7 +422,12 @@ class Controller(QObject):
         elif demo=='working': self.progress='[Preview] Building a task schedule'; self.set_state(State.WORKING); self.expand()
         elif demo=='speaking': self.result_text='[Preview] Sample playback appearance · no audio'; self.set_state(State.SPEAKING); self.expand()
         elif demo=='response':
-            self.set_state(State.IDLE); self.overlay.show_card('Preview · sample response','Your project has three tasks. This is simulated content; no model, microphone, or tools were used.')
+            self.history_records=[]
+            for index in range(12):
+                self.request_id+=1
+                self.live_message('user',f'[Preview] Example message {index+1}')
+                self.live_message('assistant',f'[Preview] Simulated response {index+1}. No model or tools were called.')
+            self.set_state(State.IDLE); self.overlay.show_card('Preview · sample response','[Preview] Hello! Expand to try the conversation composer.')
         elif demo=='error': self.show_error('Preview · sample error','No microphone is opened in preview. Use the real microphone control in normal mode.')
         elif demo=='approval':
             self.pending='preview-id'; self.pending_info=SimpleNamespace(description='[Preview] Move Documents/sample.txt to Downloads/sample.txt',risk='HIGH',args={'source':'Documents/sample.txt','destination':'Downloads/sample.txt'},reasons=['Destination exists; overwrite requires explicit permission.'])

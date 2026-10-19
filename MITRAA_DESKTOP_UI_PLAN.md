@@ -14,6 +14,7 @@ Escape hides and cancels audio; it does not claim running tools were cancelled o
 
 - `assistant/utterance.py`: WebRTC VAD, configurable Endpointer, native-rate resampling, bounded callback queue, pre-roll and capture context.
 - `assistant/voice.py`: cancellable model-readiness/capture/final-recognition cycle, Whisper confidence checks, Windows SAPI lifecycle.
+- `assistant/neural_speaker.py`: optional local Kokoro British male output, bounded CPU thread usage, off-thread synthesis, actual playback lifecycle and level events, interruption and stream cleanup. Auto selects installed model assets; normal startup never downloads a model.
 - `assistant/worker.py`: serial request-tagged agent/orchestrator/database ownership and cleanup.
 - `assistant/ui/controller.py`: session IDs, request IDs, explicit transitions, scoped Escape hook and Qt tray.
 - `assistant/ui/overlay.py`: transparent masked shapes, 300-ms width/opacity reveal, work-area clamp, persisted position, cards and intentional input/approval focus.
@@ -22,9 +23,44 @@ Escape hides and cancels audio; it does not claim running tools were cancelled o
 
 The dock is 456 by 88 logical pixels, with a dark translucent teal/amber fine edge. Its orb remains left-anchored where the monitor work area permits. When the right edge would overflow, position interpolates minimally during expansion. Work-area changes clamp the overlay. Reduced motion uses static light phases and immediate presentation changes.
 
+Listening adds two softly fading, staggered teal circular ripples in the existing margin around the 72-pixel orb. A slow outward wave identifies waiting-for-speech; smoothed microphone activity strengthens the waves during speech. The orb and overlay geometry stay unchanged. Reduced motion uses one static subtle contour. Ripples disappear outside listening states.
+
+## Conversation card extension
+
+The upper card has an accessible icon-only expand/collapse control. Expanding
+animates its height upward over 220 ms, preserving the dock/orb center where the
+work area permits. Reduced motion applies the target height immediately. The
+same card width is retained and both width and height are capped to available space.
+
+`assistant/ui/conversation.py` provides safely escaped, selectable conversation
+messages with local timestamps and a fixed growing composer. Enter sends and
+Shift+Enter inserts a newline. Draft clearing follows controller acceptance;
+collapse and busy states preserve drafts. The scroll view follows the bottom
+only when the reader is near it; older pages compensate for added document height.
+
+The worker persists each accepted user before provider initialization, passes
+`save_user=False` to the existing orchestrator, and emits saved message IDs.
+Controller request/role keys reconcile immediate messages with database IDs and
+history pages. Pages contain 40 current-conversation user/assistant messages and
+exclude tool/system messages and assistant tool-call envelopes. Generation IDs
+invalidate history from prior conversations. Failures retain the user message
+without inventing an assistant reply. Retrieval and sessions remain on the worker.
+
+Approvals remain in the same card beside history, with explicit decisions and
+submission disabled. Expanding alone does not affect audio; deliberate composer
+editing uses the existing capture cancellation path. Preview adds labeled sample
+history and simulated composer replies without constructing an agent or voice.
+
+Focused tests cover paging, persistence, duplicate reconciliation, safe rendering,
+stale history, drafts, keyboard shortcuts, capture cancellation, approval guards,
+scroll position and hidden results. Offscreen renders were checked at 1x, 1.5x and
+2x, with limited vertical space. An initial native Windows focus check failed;
+explicit composer click focus was added and verified offscreen. Native desktop
+focus and mixed-monitor behavior still need a manual check after this change.
+
 ## Endpoint defaults
 
-WebRTC aggressiveness 2; 16-kHz mono PCM, 30-ms frames; onset 150 ms positive in a six-frame window; normal voiced target 270 ms; pre-roll 300 ms plus onset confirmation; end silence 1.0 s (frame-quantized); trailing padding 200 ms (210 ms quantized); no-speech timeout 8 s; capture limit 30 s. Immediate speech is never discarded for calibration. Noise adaptation uses only non-speech and slows after onset. Short confirmed utterances require stronger Whisper confidence rather than rejection by text length. Metadata filters: no-speech <=0.6, average log probability >=-1.0 (-0.65 for short speech), compression ratio <=2.4.
+WebRTC aggressiveness 2; 16-kHz mono PCM, 30-ms frames; onset 150 ms positive in a six-frame window; normal voiced target 270 ms; pre-roll 300 ms plus onset confirmation; end silence 0.6 s (20 frames, tuned for faster turn completion; shorter pauses reset on resumed speech); trailing padding 200 ms (210 ms quantized); no-speech timeout 8 s; capture limit 30 s. Immediate speech is never discarded for calibration. Noise adaptation uses only non-speech and slows after onset. Short confirmed utterances require stronger Whisper confidence rather than rejection by text length. Metadata filters: no-speech <=0.6, average log probability >=-1.0 (-0.65 for short speech), compression ratio <=2.4.
 
 All endpoint settings and their `MITRAA_*` names appear in `backend/.env.example` and `backend/README.md`. WebRTC failure is an explicit error, never an energy-only fallback. The callback only copies native-rate mono frames to a bounded queue; resampling/VAD/transcription never run inside it. Streams close before final recognition and on cancellation/errors. Audio is kept in memory only.
 

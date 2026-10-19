@@ -1,9 +1,10 @@
 """Transparent orb/dock shell. Presentation changes never operate the agent."""
 import math
+from html import escape
 from enum import Enum
-from PySide6.QtCore import Qt, QPoint, QRectF, QTimer, Signal, Property, QPropertyAnimation, QEasingCurve, QSettings
+from PySide6.QtCore import Qt, QPoint, QRectF, QTimer, Signal, Property, QPropertyAnimation, QEasingCurve, QSettings, QVariantAnimation
 from PySide6.QtGui import QPainter, QPen, QColor, QLinearGradient, QPainterPath, QRegion, QCursor
-from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QLineEdit, QTextBrowser,
+from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QLineEdit, QTextBrowser,QLayout,
                              QVBoxLayout, QHBoxLayout, QGraphicsOpacityEffect, QApplication)
 from mitraa.assistant.ui.orb import Orb
 from mitraa.assistant.ui.controls import Waveform, control_icon
@@ -18,7 +19,7 @@ STYLE = '''
 QWidget { color: #d7e6e8; font-family: "Segoe UI"; font-size: 11px; }
 QLabel#name { color: #f2f6f6; font-size: 13px; font-weight: 600; }
 QLabel#state { color: #8bb4c0; font-size: 11px; }
-QFrame#card { background: rgba(10,25,31,246); border: 1px solid #34575b; border-radius: 14px; }
+QFrame#card { background: transparent; border: none; }
 QLabel#heading { color: #f1f7f8; font-size: 12px; font-weight: 600; }
 QPushButton { background: transparent; border: 1px solid #2b4148; border-radius: 15px; padding: 4px; }
 QPushButton:hover, QPushButton:focus { background: #20454d; border-color: #4a8b96; }
@@ -32,6 +33,23 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 '''
 
+class ResponseCard(QFrame):
+    """Teal-to-amber glass edge shared visually with the dock."""
+    def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1,1,-1,-1)
+        fill = QLinearGradient(0,0,self.width(),self.height())
+        fill.setColorAt(0,QColor(8,34,42,248))
+        fill.setColorAt(.65,QColor(10,19,25,248))
+        fill.setColorAt(1,QColor(43,34,23,248))
+        p.setBrush(fill); p.setPen(Qt.NoPen); p.drawRoundedRect(rect,14,14)
+        p.setBrush(Qt.NoBrush)
+        for width,alpha in [(5,24),(2.5,65),(1,230)]:
+            edge=QLinearGradient(0,0,self.width(),self.height()*.3)
+            for pos,color in [(0,'#00dce8'),(.55,'#25cbd4'),(1,'#efbe66')]:
+                tint=QColor(color); tint.setAlpha(alpha); edge.setColorAt(pos,tint)
+            p.setPen(QPen(edge,width)); p.drawRoundedRect(rect,14,14)
+
 class Overlay(QWidget):
     dismiss_requested = Signal()
     keyboard_requested = Signal()
@@ -42,6 +60,10 @@ class Overlay(QWidget):
     orb_clicked = Signal()
     orb_double_clicked = Signal()
     visibility_changed = Signal(bool)
+    conversation_opened = Signal()
+    conversation_submitted = Signal(str)
+    conversation_typing = Signal()
+    older_requested = Signal()
 
     def __init__(self, preview=False):
         super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
@@ -57,10 +79,16 @@ class Overlay(QWidget):
         self.row_height = 88
         self.base_y = 0
         self._card_visible = False
+        self.history_expanded=False; self._conversation=None; self._history_height=0
+        self._compact_title='Mitraa'; self._approval=False; self._details=False
+        self.history_animation=QVariantAnimation(self); self.history_animation.setDuration(220)
+        self.history_animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self.history_animation.valueChanged.connect(self.set_history_height)
         self.typing = False
         self.animation = QPropertyAnimation(self, b'expansion', self)
         self.animation.setDuration(300); self.animation.setEasingCurve(QEasingCurve.InOutCubic)
         self.orb = Orb(); self.orb.setParent(self)
+        self.orb.timer.timeout.connect(self.animate_listening)
         self.orb.reduced = self.preferences.value('reduced_motion', False, type=bool)
         self.orb.clicked.connect(self.orb_clicked.emit)
         self.orb.double_clicked.connect(self.orb_double_clicked.emit)
@@ -78,9 +106,16 @@ class Overlay(QWidget):
             button.setIcon(control_icon(kind)); button.setToolTip(tip); button.setAccessibleName(tip)
             if kind == 'microphone': button.setObjectName('mic')
             button.clicked.connect(signal.emit); self.buttons.append(button)
-        self.card = QFrame(self); self.card.setObjectName('card'); self.card.setFixedWidth(360)
-        layout = QVBoxLayout(self.card); layout.setContentsMargins(14,13,14,13); layout.setSpacing(9)
-        self.title = QLabel(); self.title.setObjectName('heading'); self.title.setWordWrap(True); layout.addWidget(self.title)
+        self.card = ResponseCard(self); self.card.setObjectName('card'); self.card.setFixedWidth(360)
+        layout = QVBoxLayout(self.card); layout.setContentsMargins(18,16,18,16); layout.setSpacing(9)
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        header=QHBoxLayout()
+        self.title = QLabel(); self.title.setObjectName('heading'); self.title.setWordWrap(True); header.addWidget(self.title,1)
+        self.history_button=QPushButton(); self.history_button.setFixedSize(30,30)
+        self.history_button.setStyleSheet('QPushButton:focus { border:2px solid #7ee4e8; }')
+        self.history_button.setIcon(control_icon('expand')); self.history_button.setToolTip('Expand conversation')
+        self.history_button.setAccessibleName('Expand conversation'); self.history_button.clicked.connect(self.toggle_history)
+        header.addWidget(self.history_button); layout.addLayout(header)
         self._body = None
         self.card_layout = layout
         self.details = QPushButton('Technical details'); self.details.clicked.connect(self.toggle_details); layout.addWidget(self.details)
@@ -116,6 +151,45 @@ class Overlay(QWidget):
 
     def clear_entry(self):
         if self._entry is not None: self._entry.clear()
+
+    @property
+    def conversation(self):
+        if self._conversation is None:
+            from mitraa.assistant.ui.conversation import ConversationPanel
+            self._conversation=ConversationPanel(self.card)
+            self.card_layout.insertWidget(1,self._conversation,1)
+            self._conversation.submitted.connect(self.conversation_submitted)
+            self._conversation.typing_started.connect(self.conversation_typing)
+            self._conversation.older_requested.connect(self.older_requested)
+            self._conversation.hide()
+        return self._conversation
+
+    def set_history_height(self,value):
+        self._history_height=float(value); self.refresh()
+
+    def history_limit(self):
+        self.initialize_position()
+        screen=QApplication.screenAt(self._origin+QPoint(36,36)) or QApplication.primaryScreen()
+        return max(100,min(440,self._origin.y()-18-screen.availableGeometry().top()))
+
+    def toggle_history(self):
+        self.history_animation.stop()
+        start=self.card.height()
+        self.history_expanded=not self.history_expanded
+        self._card_visible=True
+        self.conversation.setVisible(self.history_expanded)
+        self.history_button.setIcon(control_icon('collapse' if self.history_expanded else 'expand'))
+        tip='Collapse conversation' if self.history_expanded else 'Expand conversation'
+        self.history_button.setToolTip(tip); self.history_button.setAccessibleName(tip)
+        self.title.setText('Mitraa' if self.history_expanded else self._compact_title)
+        if self._body is not None: self._body.setVisible(self._approval or (not self.history_expanded and not self._details and bool(self._body.toPlainText())))
+        target=self.history_limit() if self.history_expanded else self.fit_body()
+        self._history_height=start
+        if self.orb.reduced: self._history_height=target; self.refresh()
+        else:
+            self.history_animation.setStartValue(start); self.history_animation.setEndValue(target); self.history_animation.start()
+        if self.history_expanded:
+            self.conversation.latest(); self.conversation_opened.emit()
 
     def screen_added(self, screen):
         screen.availableGeometryChanged.connect(lambda _: self.refresh())
@@ -162,10 +236,19 @@ class Overlay(QWidget):
         screen = QApplication.screenAt(self._origin + QPoint(36,36)) or QApplication.primaryScreen()
         area = screen.availableGeometry()
         self.dock_width = min(456, area.width())
+        card_width=min(360,max(160,self.dock_width-16))
+        self.card.setFixedWidth(card_width)
         # Use font metrics to keep the center usable when accessibility font size rises.
         self.row_height = max(88, self.fontMetrics().height()*4+16) if self._progress > 0 else 88
         width = round(88 + (self.dock_width-88)*self._progress)
-        card_height = self.fit_body() if self._card_visible else 0
+        card_height = (min(round(self._history_height or self.history_limit()),self.history_limit())
+                       if self.history_expanded else self.fit_body()) if self._card_visible else 0
+        if self.history_animation.state()==QVariantAnimation.Running:
+            card_height=min(round(self._history_height),self.history_limit())
+        self.card.setMinimumHeight(0)
+        self.card.setMaximumHeight(max(0,card_height))
+        if self._conversation is not None:
+            self._conversation.setMinimumHeight(0)
         self.base_y = card_height+10 if self._card_visible else 0
         origin_x = self._origin.x()-8
         full_shift = min(0, area.right()+1 - (origin_x+self.dock_width))
@@ -187,13 +270,16 @@ class Overlay(QWidget):
             button.move(self.content.width()-104+i*35, (self.content.height()-30)//2)
         self.content.setVisible(self._progress > 0)
         self.fade.setOpacity(self._progress)
-        self.card.setGeometry(max(8,self.dock_width-368),0,360,card_height)
+        self.card.setGeometry(max(8,self.dock_width-card_width-8),0,card_width,card_height)
         self.card.setVisible(self._card_visible and self._progress > .85)
         self.orb.raise_()
         self.update_mask(); self.update()
 
     def update_mask(self):
         region = QRegion(self.orb.geometry(), QRegion.Ellipse)
+        if self.listening_ripples:
+            center=self.orb.geometry().center()
+            region |= QRegion(center.x()-43,center.y()-43,87,87,QRegion.Ellipse)
         if self._progress > 0:
             path = QPainterPath(); path.addRoundedRect(QRectF(36,self.base_y+5,self.width()-40,self.row_height-10),36,36)
             region |= QRegion(path.toFillPolygon().toPolygon())
@@ -202,9 +288,49 @@ class Overlay(QWidget):
             region |= QRegion(path.toFillPolygon().toPolygon())
         self.setMask(region)
 
+    @property
+    def listening_ripples(self):
+        return self.orb.state in ('waiting_for_speech','recording_speech') and not self.orb.muted
+
+    def animate_listening(self):
+        if self.isVisible():
+            self.update_mask()
+            if self.listening_ripples: self.update()
+
+    def paint_listening_ripples(self, painter):
+        if not self.listening_ripples: return
+        painter.save()
+        center=self.orb.geometry().center()
+        painter.translate(center.x()+.5,center.y()+.5)
+        painter.setBrush(Qt.NoBrush)
+        level=self.orb.listening_level
+        # Two staggered waves move through the existing transparent margin.
+        # The glass orb itself stays 72px, with no expansion or layout change.
+        for offset in (0., .5):
+            phase=(self.orb.phase/1.8+offset)%1.
+            if self.orb.reduced: phase=.65
+            radius=33.5+9*phase
+            opacity=(math.sin(math.pi*phase)**1.3) * (55+100*level)
+            path=QPainterPath()
+            for i in range(97):
+                angle=i/96*math.tau
+                ripple=0 if self.orb.reduced else (.3+.55*level)*math.sin(angle*3-self.orb.phase*2)
+                r=radius+ripple
+                x,y=r*math.cos(angle),r*math.sin(angle)
+                if i==0: path.moveTo(x,y)
+                else: path.lineTo(x,y)
+            path.closeSubpath()
+            for width,factor in ((3.2,.16),(1.1,1.)):
+                painter.setPen(QPen(QColor(45,224,232,round(opacity*factor)),width))
+                painter.drawPath(path)
+            if self.orb.reduced: break
+        painter.restore()
+
     def paintEvent(self, event):
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        self.paint_listening_ripples(p)
         if self._progress <= 0: return
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing); p.setOpacity(self._progress)
+        p.setOpacity(self._progress)
         rect = QRectF(36,self.base_y+5,self.width()-40,self.row_height-10)
         fill = QLinearGradient(0,rect.top(),0,rect.bottom())
         fill.setColorAt(0,QColor(20,43,49,245)); fill.setColorAt(.45,QColor(7,18,25,246)); fill.setColorAt(1,QColor(13,34,39,245))
@@ -269,11 +395,11 @@ class Overlay(QWidget):
         self.activateWindow(); self.raise_(); self.entry.setFocus(Qt.OtherFocusReason)
 
     def fit_body(self):
-        width=332; document=self.body.document(); document.setTextWidth(width)
+        width=self.card.width()-36; document=self.body.document(); document.setTextWidth(width)
         height=math.ceil(document.size().height())
         if height>180:
             document.setTextWidth(width-8); height=math.ceil(document.size().height())
-        self.body.setFixedHeight(max(20,min(180,height+4)))
+        self.body.setFixedHeight(max(20,min(90 if self.history_expanded else 180,height+4)))
         self.title.setFixedHeight(max(self.title.fontMetrics().height(),self.title.heightForWidth(width)))
         self.card.layout().invalidate()
         return self.card.layout().sizeHint().height()
@@ -285,8 +411,18 @@ class Overlay(QWidget):
 
     def show_card(self,title,text='',approval=False,details=False):
         self._card_visible=True; self.typing=False; self.hide_entry()
-        self.title.setText(title); self.body.setPlainText(text)
-        self.body.setVisible(bool(text) and not details); self.details.setVisible(details); self.details.setText('Technical details')
+        self._compact_title=title; self._approval=approval; self._details=details
+        self.title.setText('Mitraa' if self.history_expanded else title)
+        if title == 'Mitraa' and not approval and not details:
+            # Escape model/user text: it must never become executable rich markup.
+            self.body.setHtml('<div style="color:#f1f7f8;font-size:18px;font-weight:600;">'
+                              + escape(text).replace('\n','<br>') + '</div>')
+        else:
+            self.body.setPlainText(text)
+        self.body.setVisible(bool(text) and not details and (not self.history_expanded or approval)); self.details.setVisible(details); self.details.setText('Technical details')
+        if self.history_expanded:
+            self.conversation.show()
+            if approval: self.body.setFixedHeight(90)
         self.deny.setVisible(approval); self.allow.setVisible(approval)
         self.present(Presentation.EXPANDED_DOCK)
         if approval:
@@ -295,7 +431,12 @@ class Overlay(QWidget):
             self.activateWindow(); self.raise_(); self.deny.setFocus(Qt.OtherFocusReason)
 
     def clear_card(self):
-        self._card_visible=False; self.card.hide(); self.refresh()
+        self._approval=False; self._details=False
+        self.deny.hide(); self.allow.hide(); self.details.hide()
+        if self._body is not None: self._body.hide()
+        self._card_visible=self.history_expanded
+        if not self.history_expanded: self.card.hide()
+        self.refresh()
 
     def drag_by(self, delta):
         self.initialize_position(); self._origin += delta; self.refresh()

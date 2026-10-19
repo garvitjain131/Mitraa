@@ -33,6 +33,83 @@ copy .env.example .env            # macOS/Linux: cp .env.example .env
 
 ## Run
 
+### Expandable conversation card
+
+Use the diagonal-arrow icon at the upper card's top-right to expand the current
+conversation upward; use the inward arrows to return to the latest answer.
+The dock and orb stay anchored. Messages show local timestamps, selectable text,
+and distinct user bubbles. The composer at the bottom sends with Enter;
+Shift+Enter inserts a newline. Drafts survive collapse, hiding and busy/approval
+states, and clear only on accepted submission. New conversation clears its draft
+and view while keeping previously saved conversations in the database.
+
+The same controller and serial AgentWorker handle dock, voice and composer input.
+Accepted user messages are saved before provider setup so provider failures do
+not lose them. The orchestrator reuses the saved user message instead of saving
+a duplicate. History retrieves 40 visible user/assistant messages per page from
+the current conversation, excluding system/tool messages and tool-call payloads.
+Use Load earlier messages for older pages. Reading position is preserved and
+New messages jumps to the latest reply. History requests are queued behind any
+active agent operation; the GUI and existing messages remain available while loading.
+
+Expanding or collapsing does not change capture/playback. Editing the composer
+cancels active capture. Pending approvals retain their explicit action details
+and Allow/Deny controls; submission stays disabled until the decision is resolved.
+Message text is escaped before rich-text rendering and external links are disabled.
+
+In `python -m mitraa.assistant --preview`, the tray's next/simulate action cycles
+to a labeled sample response with a scrollable demo conversation. Expand its
+card and try a draft or send to see an explicitly simulated reply. No provider,
+microphone, speech model, network access or tools are used. Run
+`python -m tests.conversation_smoke` from `backend` for layout checks; set
+`QT_QPA_PLATFORM=offscreen` for headless rendering and `QT_SCALE_FACTOR` for scaling.
+
+### Optional natural local voice
+
+The desktop selects Kokoro's British male `bm_george` when
+`backend/models/kokoro/kokoro-v1.0.onnx` and `voices-v1.0.bin` are present.
+This is a stock neural voice with a calm British delivery, not a clone of JARVIS
+or the actor in the reference trailer. It speaks English; Hindi recognition is
+independent and this profile does not provide natural Hindi speech output.
+
+Install the optional runtime using `python -m pip install -r requirements-neural-voice.txt`
+and run `python scripts/download_neural_voice.py` from `backend` to fetch the
+maintainer's release files. The setup script checks sizes and published SHA-256
+hashes and saves source/license records beside the models. Scan downloaded
+assets and dependencies with your antivirus before loading them. On this machine,
+downloads, pip cache/temp, runtime installation and sample WAV files were kept on D:.
+The runtime uses MIT and model uses Apache-2.0 licenses; see the retained notices.
+
+`MITRAA_TTS_BACKEND=auto` uses local Kokoro when assets exist, otherwise Windows
+speech; `kokoro` explicitly requires the neural voice and `windows` forces SAPI.
+`MITRAA_NEURAL_VOICE=bm_george`, `MITRAA_NEURAL_SPEED=0.96` and
+`MITRAA_TTS_MODEL_DIR` control the profile and model directory. Synthesis and
+playback stay local and off the GUI thread, with playback start/finish/interruption
+events and actual playback levels. Capture waits for playback to release. Loading
+and synthesis cost depend on CPU; this is not an instant cloud voice.
+
+Speech recognition uses one local multilingual Whisper model for Hindi, English,
+and mixed Hindi-English. Leave `MITRAA_STT_LANGUAGE=` empty (or use `auto`)
+for detection restricted to Hindi and English; `hi` and `en` force one language.
+Decoding stays pinned to the selected language so short Hindi speech cannot
+switch to Urdu script. Mixed Hindi-English still uses the multilingual model. Hindi text is
+preserved in Devanagari for the agent and conversation history. The desktop
+transcript displays Hindi in English letters (Hinglish) using local transliteration;
+existing English words, capitalization and paths remain unchanged. This is not
+English translation. Roman spellings are phonetic approximations and may vary
+from how you would type them.
+Recognition uses beam search with deterministic decoding and the recorder's
+single VAD pass, preserving its pre-roll and trailing audio. Confidence filters
+still reject unreliable speech. Accuracy is not guaranteed for every word or accent;
+real microphone samples are needed to assess it. `MITRAA_STT_MODEL=medium` can
+be tested for accuracy at a higher CPU, memory, download and latency cost.
+
+Desktop UI test commands work locally without provider keys: `hi` / `hello` →
+`Hello!`; `what is your name?` / `what's your name?` → `Mitraa.`.
+Typed and transcribed commands share this behavior and persist in conversation
+history. Other requests use the configured agent. Replies appear in a teal/amber
+glass card above the dock and use the existing speech output when available.
+
 ```powershell
 # Terminal chat (best way to test Phase 1)
 python -m mitraa.cli
@@ -138,7 +215,7 @@ The single recorder uses [WebRTC VAD](https://github.com/daanzu/py-webrtcvad-whe
 | `MITRAA_VAD_MODE` | 2 | WebRTC aggressiveness, 0–3 |
 | `MITRAA_SPEECH_ONSET_MS` | 150 | Five positive VAD frames in a six-frame onset window |
 | `MITRAA_MIN_SPEECH_MS` | 270 | Normal voiced-audio target; shorter confirmed utterances require stronger transcription confidence |
-| `MITRAA_END_SILENCE` | 1.0 | Seconds of non-speech after confirmed speech; about 1.02 seconds at 30-ms resolution |
+| `MITRAA_END_SILENCE` | 0.6 | Seconds of non-speech after confirmed speech; 600 ms at 30-ms resolution. Increase for longer speaking pauses |
 | `MITRAA_NO_SPEECH_TIMEOUT` | 8 | Capture seconds before speech must begin |
 | `MITRAA_MAX_UTTERANCE` | 30 | Maximum capture seconds; accepted audio finalizes once with a visible limit notice |
 | `MITRAA_PREROLL_MS` | 300 | Retained audio preceding onset, plus the onset-confirmation window |
@@ -146,11 +223,11 @@ The single recorder uses [WebRTC VAD](https://github.com/daanzu/py-webrtcvad-whe
 | `MITRAA_STT_MIN_LOGPROB` | -1.0 | Minimum accepted Whisper segment average log probability |
 | `MITRAA_STT_MAX_NO_SPEECH` | 0.6 | Maximum accepted Whisper no-speech probability |
 
-VAD is the speech classifier; RMS supplies a low numerical-silence guard and a slowly adapting noise floor, updated only on non-speech frames (2% before onset, 0.2% afterward). There is no initial silent-calibration assumption, so immediate speech is retained. The onset window rejects brief bursts; a one-second end-silence threshold tolerates ordinary pauses. Brief confirmed speech is allowed when Whisper average log probability is at least -0.65. Segments with compression ratio above 2.4 are also excluded. Empty or rejected recordings never call the agent. These tunings do not guarantee speech/noise discrimination in every room.
+VAD is the speech classifier; RMS supplies a low numerical-silence guard and a slowly adapting noise floor, updated only on non-speech frames (2% before onset, 0.2% afterward). There is no initial silent-calibration assumption, so immediate speech is retained. The onset window rejects brief bursts; a 600-ms end-silence threshold gives quicker turn completion while retaining shorter pauses. Meaningful speech resets the timer. Set `MITRAA_END_SILENCE=1.0` if you prefer longer pauses. VAD hangover and subsequent local transcription can add time beyond this silence window. Brief confirmed speech is allowed when Whisper average log probability is at least -0.65. Segments with compression ratio above 2.4 are also excluded. Empty or rejected recordings never call the agent. These tunings do not guarantee speech/noise discrimination in every room.
 
 Whisper runs locally (`MITRAA_STT_MODEL=small`, `MITRAA_STT_DEVICE=auto`, `MITRAA_STT_LANGUAGE=` for multilingual detection). Normal launch preloads voice in the background after desktop readiness (`MITRAA_VOICE_PRELOAD=true`; set false to load only on summon). Cached weights load directly without contacting Hugging Face. A missing model downloads once. Auto device selection skips CUDA when the runtime reports no usable device, and GPU fallback reuses the same resolved model path. CPU loading no longer performs language detection and decoding on silence; GPU loading validates its encoder before capture. The loading orb remains responsive and capture stays off until readiness. Preloading itself never opens the microphone or executes tools. No partial recognition is displayed in this version. Transcription and VAD are local, raw audio is not saved, and logs omit transcript/audio contents. Recognition timing depends on the hardware.
 
-Speech output uses Windows SAPI (`MITRAA_TTS_VOICE=Heera`, `MITRAA_TTS_RATE=1`), with playback-state start, completion, interruption and error signals. The microphone waits for playback to stop. Muting affects speech output, not explicitly requested microphone input. Microphone errors include retry guidance; allow desktop microphone access in Windows settings yourself if necessary.
+Speech output uses Windows SAPI (`MITRAA_TTS_VOICE=David`, `MITRAA_TTS_RATE=-1`), with playback-state start, completion, interruption and error signals. The microphone waits for playback to stop. Muting affects speech output, not explicitly requested microphone input. Microphone errors include retry guidance; allow desktop microphone access in Windows settings yourself if necessary.
 
 Qt owns the app/tray event loop. Agent/database sessions stay on one worker thread, with request-tagged results. Audio sessions have distinct IDs so cancelled capture, transcription and playback results cannot submit or modify a newer session. Streams close through context managers on every exit. Quit stops hooks, tray, capture and speech, releases the instance lock, and queues database cleanup on its owning thread. Already-running model/tool calls finish before that worker exits; neither tool execution nor Whisper inference is forcibly terminated.
 

@@ -32,6 +32,15 @@ def test_pick_voice():
     assert pick_voice(voices, "") is None
 
 
+def test_default_speech_profile_uses_calm_male_voice():
+    from mitraa.config import Settings
+    settings=Settings(_env_file=None)
+    assert settings.mitraa_tts_voice=='David'
+    assert settings.mitraa_tts_rate==-1
+    assert pick_voice(['Microsoft Heera - English (India)',
+                       'Microsoft David - English (United States)'],settings.mitraa_tts_voice)==1
+
+
 def test_disabled_speaker_says_nothing():
     speaker = Speaker.__new__(Speaker)  # no COM thread
     speaker.enabled, speaker.available = False, True

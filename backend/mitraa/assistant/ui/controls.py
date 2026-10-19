@@ -18,6 +18,15 @@ def control_icon(kind):
         p.drawRoundedRect(QRectF(9, 3, 6, 11), 3, 3)
         p.drawArc(QRectF(6, 7, 12, 11), 180 * 16, 180 * 16)
         p.drawLine(12, 18, 12, 22)
+    elif kind in ('expand','collapse'):
+        if kind=='expand':
+            p.drawLine(13,11,19,5); p.drawLine(14,5,19,5); p.drawLine(19,5,19,10)
+            p.drawLine(11,13,5,19); p.drawLine(5,14,5,19); p.drawLine(5,19,10,19)
+        else:
+            p.drawLine(19,5,13,11); p.drawLine(13,6,13,11); p.drawLine(13,11,18,11)
+            p.drawLine(5,19,11,13); p.drawLine(6,13,11,13); p.drawLine(11,13,11,18)
+    elif kind=='send':
+        p.drawLine(12,19,12,5); p.drawLine(6,11,12,5); p.drawLine(12,5,18,11)
     else:
         p.drawLine(6, 6, 18, 18); p.drawLine(18, 6, 6, 18)
     p.end(); return QIcon(image)

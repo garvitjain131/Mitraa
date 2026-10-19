@@ -98,10 +98,11 @@ class Orchestrator:
 
     # ------------------------------------------------------------ public API
 
-    def run(self, conversation_id: str | None, user_message: str) -> AgentResponse:
+    def run(self, conversation_id: str | None, user_message: str, *, save_user: bool = True) -> AgentResponse:
         conversation = self._conversation(conversation_id, user_message)
         self._expire_pending(conversation.id)
-        self._save(conversation.id, "user", content=user_message)
+        if save_user:
+            self._save(conversation.id, "user", content=user_message)
         self.session.commit()
         return self._loop(_Run(conversation.id))
 

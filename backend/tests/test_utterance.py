@@ -26,12 +26,28 @@ def test_immediate_speech_has_no_silent_calibration():
 
 def test_brief_pauses_keep_utterance_and_silence_finalizes_once():
     ep=Endpointer(); feed(ep,.6,True)
-    assert feed(ep,.6,False) is None
+    assert feed(ep,.3,False) is None
     assert feed(ep,.3,True) is None
-    assert feed(ep,.9,False) is None
-    assert feed(ep,.2,False)=='end'
+    assert feed(ep,.57,False) is None
+    assert feed(ep,.03,False)=='end'
     elapsed=ep.elapsed
     assert ep.feed(.05,True)=='end' and ep.elapsed==elapsed
+
+
+def test_endpoint_default_and_setting_stop_after_six_hundred_ms():
+    settings=Settings(_env_file=None,mitraa_end_silence=.6)
+    for ep in (Endpointer(),Endpointer.from_settings(settings)):
+        feed(ep,.6,True)
+        assert feed(ep,.57,False) is None
+        assert feed(ep,.03,False)=='end'
+        assert ep.quiet_seconds==pytest.approx(.6)
+
+
+def test_endpoint_silence_remains_configurable():
+    ep=Endpointer.from_settings(Settings(_env_file=None,mitraa_end_silence=1.2))
+    feed(ep,.6,True)
+    assert feed(ep,.9,False) is None
+    assert feed(ep,.3,False)=='end'
 
 
 def test_noise_bursts_and_no_speech_timeout():
@@ -99,7 +115,7 @@ def test_preroll_and_trailing_padding_retained():
     assert outcome=='end'
     assert audio[0]==pytest.approx(.001)
     assert np.count_nonzero(np.isclose(audio,.03))==20*480
-    # Tail is padding, not the entire one-second endpoint silence.
+    # Tail is padding, not the entire endpoint silence.
     assert np.allclose(audio[-480:],.001) and len(audio)<(12+20+34)*480
 
 @pytest.mark.parametrize('rate',[16000,44100,48000])
